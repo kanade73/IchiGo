@@ -1,0 +1,123 @@
+{
+  "task": "T30 (docs/spec/04-tasks.md), docs/spec/03-engine.md §9 \"勝率表示と CGOS\"",
+  "importedAt": "2026-09-09",
+  "note": "No source lines were copied from any file listed below into Scripts/cgos/. Scripts/cgos/ichigo_cgos_client.py and Scripts/cgos/fake_cgos_server.py are a clean-room reimplementation targeting `ichigo gtp` directly (Python 3.12 stdlib only). What was taken from each reference is recorded per-file below: either the *wire protocol grammar* (verified against a live fetch of the public repository, not assumed from a single source) or a design *idea* (reconnect/backoff/shutdown/log-rotation shape) reused in a rewritten form appropriate to this codebase. Copyright headers are therefore not carried into these files, since no covered expression was copied -- see `licensing` below for the specific reasoning per reference. The protocol grammar itself (command names, field order, units) is not copyrightable; it was cross-checked against both the client's parser and the server's formatter at the same revision so it is not trusting either side's assumptions alone.",
+  "pinnedPublicProtocolReference": {
+    "repository": "https://github.com/zakki/cgos",
+    "repositoryDescription": "\"Computer Go Server mirror\" (fetched via the GitHub REST API)",
+    "revision": "4dcff8754400fa43a71323ffc3d2c5eb4a19f7f1",
+    "revisionCommitDate": "2024-07-25T02:42:29Z",
+    "revisionCommitMessage": "Fix errros at first run on Windows",
+    "fetchedAt": "2026-09-09",
+    "fetchMethod": "GitHub REST API (api.github.com/repos/zakki/cgos/commits, .../git/trees) and raw.githubusercontent.com, read-only",
+    "files": [
+        {
+          "path": "client-python/src/cgosclient.py",
+          "sha256AtFetchedRevision": "6c38054bad4368565b363d7321af9063ebcf7a62ff7a322f43140d416ac6e773",
+          "license": "GPL-3.0-or-later, Copyright (C) 2009 Christian Nentwich and contributors",
+          "role": "Reference CGOS *client*: login handshake (protocol/username/password), setup/play/genmove/gameover dispatch via reflection, genmove_analyze negotiation, mainloop reconnect-with-backoff and kill-file-driven graceful stop.",
+          "ideasTaken": [
+            "Command dispatch shape: one line per server message, first token selects a handler, unrecognised commands are logged and otherwise ignored.",
+            "genmove_analyze negotiation: advertise it back to the server only if both the server offered it in its 'protocol' line and analysis is locally enabled.",
+            "Graceful stop is checked only between games (their kill-file check sites), never mid-game -- reimplemented here as a threading.Event set by a SIGTERM/SIGINT handler, checked exactly once, right after a gameover is fully processed."
+          ],
+          "notCopied": "The vendored client's subprocess-based EngineConnector, its config-file format, SGF persistence, observer/GoGUI support, and multi-engine round-robin switching are all absent here -- this client owns one `ichigo gtp` subprocess for its whole lifetime and talks GTP to it directly."
+        },
+        {
+          "path": "client-python/src/gtpengine.py",
+          "sha256AtFetchedRevision": "093a3871c094fc35ed792dd0c1357087ce31c5ce345c43cdddffee880de35273",
+          "license": "GPL-3.0-or-later, Copyright (C) 2009 Christian Nentwich and contributors",
+          "role": "Reference GTP<->CGOS bridge: EngineConnector.requestGenMove/genmoveKata, and AnalyzeResultParser -- the exact tokenizer that turns a kata-genmove_analyze 'info' line into the JSON blob appended to a genmove reply.",
+          "ideasTaken": [
+            "The analysis wire format itself: `<move> <json>` where <json> is produced by walking the 'info' tokens field-by-field, INCLUDING two non-obvious quirks reproduced on purpose in Scripts/cgos/ichigo_cgos_client.py:parse_kata_info_line -- 'order' (and any token not in {move, winrate, score, scoreLead, pv, prior, visits}) is silently consumed and dropped, and the 'pv' field drops its first token (redundant with 'move'), being omitted entirely if that was the only token.",
+            "time_left is only ever sent to the engine immediately before genmove, never on an opponent 'play'.",
+            "Multi-candidate 'info' lines get a visits-weighted root-level winrate/score summary; single-candidate output (all this engine ever emits, per docs/spec/03-engine.md §9) reduces to just that one candidate's own values."
+          ],
+          "verifiedAgainst": "Scripts/cgos/ichigo_cgos_client.py:test cross-checked in Tests/cgos/test_analysis_parser.py against the exact example line from docs/spec/03-engine.md §9, reproducing the same JSON byte-for-byte (compact separators, same key insertion order)."
+        },
+        {
+          "path": "server-python/cgos/app/cgos.py",
+          "sha256AtFetchedRevision": "ee91f6685bd067da8ea7ff09d21d5d554de0fa92f5c1352a2eb5940e6dad4ce8",
+          "license": "MIT, Copyright (C) 2009 Don Dailey and Jason House, (c) 2022 Kensuke Matsuzaki",
+          "role": "Reference CGOS *server*: exact `setup`/`genmove`/`play`/`gameover` message formatting (field order/units), used to cross-check the client parser above instead of trusting it alone.",
+          "ideasTaken": [
+            "`setup` field order is WHITE named before BLACK (confirmed from the server's own `wp`/`bp` naming in the f-string that builds the line), each as `name(rating)`; black always moves first.",
+            "Reconnect/resume: on successful login, if the username already has an in-progress game, the server resends `setup` with the full move/time history so far and, if it is that colour's turn, an immediate `genmove` -- reused directly as fake_cgos_server.py's own resume path (_handle_password).",
+            "`genmove` time budget in `setup` is the *per-player main time in milliseconds* (`cfg.level = int(cfg[\"level\"]) * 1000`), matching what the client sends onward as `time_settings <ms//1000> 0 0`.",
+            "The reference server round-trips a client's analysis string through `json.loads`/`json.dumps(..., separators=(\",\",\":\"))` and discards it unless it parses as a JSON object -- reproduced by Scripts/cgos/ichigo_cgos_client.py's own encode_analysis using the identical separators."
+          ],
+          "notCopied": "Go rules/scoring (GoGame, ttScore, illegal-move detection), the sqlite account/rating database, and the async client/viewer plumbing are absent from fake_cgos_server.py by design (docs/spec/04-tasks.md T30: the fake server must not need Go rules -- it pairs two real engines and trusts them)."
+        },
+        {
+          "path": "server-python/cgos/app/config.py",
+          "sha256AtFetchedRevision": "66d7a95a4f348ae5bd86141616c140407367763d4466c506fb681a697f30a957",
+          "license": "MIT, Copyright (C) 2009 Don Dailey and Jason House, (c) 2022 Kensuke Matsuzaki",
+          "role": "Confirms `cfg.level` (the `setup` time field) is `int(cfg[\"level\"]) * 1000`, i.e. milliseconds.",
+          "ideasTaken": ["Units confirmation only; no structure reused."]
+        }
+    ]
+  },
+  "corroboratingLocalReferences": {
+    "note": "Read for reconnect/backoff/shutdown/log-rotation SHAPE only, per the task instructions (\"take the protocol handling, reconnect/backoff and shutdown ideas\"). Not authoritative for the protocol grammar (that was verified against the pinned public revision above); not modified; not copied.",
+    "files": [
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/Scripts/cgos/safe_cgos_client.py",
+        "sha256AtReadTime": "90c2139d9b9bc5865c266ad0d836b14eea6c0c9fcdfc47bfab6c89754a5ece59",
+        "role": "In-house wrapper subclassing the vendored upstream client for a tournament move-limit guard.",
+        "ideasTaken": [
+          "Atomic JSON marker writes (write to a temp path, os.replace) -- reused as Scripts/cgos/ichigo_cgos_client.py:_atomic_write_json for the move ledger.",
+          "The general shape of validating a 'setup' payload's parameter count/pairing before trusting it -- reimplemented independently in _on_setup's own length/parity checks."
+        ]
+      },
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/Scripts/cgos/README.md",
+        "sha256AtReadTime": "bd89422a6c295ac3d01d5354baf695580c7303c309eaa43b9d448a27cd7ba1cc",
+        "role": "Documents the vendored client's built-in reconnect (30s+jitter inner loop) vs. process-level supervisor backoff/log-rotation split, and the two-stage graceful-stop design (kill-file / SIGTERM sets a flag, checked only between games).",
+        "ideasTaken": [
+          "Graceful-stop-between-games as the shutdown contract for a CGOS client (docs/spec/03-engine.md §9 already requires this; this README is where the \"why\" -- CGOS keeps the clock running across a disconnect, so quitting mid-game forfeits on time rather than cleanly -- was cross-checked).",
+          "20 MiB / 5 backups as a *value* to use for log rotation (docs/spec/03-engine.md §9 already specifies this number independently; corroborated here since launch-cgos.sh hardcodes the same `20*1024*1024`/5)."
+        ],
+        "notCopied": "The README documents the vendored client's own non-rotating logging.FileHandler plus an external gzip-based shell rotator (launch-cgos.sh:rotate_log_if_large); Scripts/cgos/ichigo_cgos_client.py uses logging.handlers.RotatingFileHandler directly instead, per the task instructions."
+      },
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/Scripts/cgos/lib.sh",
+        "sha256AtReadTime": "7a785d3cbcca5f33b9e79dfe09ef611b692bbec28e4de49ffedf34bbae3d2181",
+        "role": "Shell helper `rotate_log_if_large` (gzip + keep-count pruning).",
+        "ideasTaken": ["None copied; Scripts/cgos/ichigo_cgos_client.py rotates via the stdlib RotatingFileHandler instead of a shell-level gzip rotator."]
+      },
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/Scripts/cgos/launch-cgos.sh",
+        "sha256AtReadTime": "2098b031d53842e8b0a5b8ba1f2b4c74d80052ef4cbe7f1149d73ef924b521b2",
+        "role": "Process supervisor: escalating backoff on fast-exit crash loops, kill-file-based graceful stop wired to Ctrl-C/SIGTERM (first signal = graceful, second = forced), 20 MiB x 5 log rotation.",
+        "ideasTaken": [
+          "SIGTERM/SIGINT should request a stop-between-games rather than tearing the connection down immediately -- reimplemented directly inside ichigo_cgos_client.py's CGOSClient (a signal handler sets a threading.Event, checked once per gameover) rather than as an external shell supervisor.",
+          "20 MiB x 5 rotation size, corroborating the value already specified in docs/spec/03-engine.md §9."
+        ],
+        "notCopied": "The double-signal emergency override, the repo-wide deployment lock, and the atomic stable-binary refresh are specific to that repository's multi-launcher tournament operations and have no analogue here (this client is a single subprocess with its own state_dir; docs/spec/03-engine.md §9: \"CGOSはIchiGo専用config/state/log/passwordを使用する\")."
+      },
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/Scripts/cgos/tests/test_safe_cgos_client.py",
+        "sha256AtReadTime": "4d908962c882137504f697d7c80a34907551de63c7f33bcaf22691e307063d11",
+        "role": "Shows the reference project testing reconnect/replay/marker-recovery via an in-process fake socket file, rather than a real TCP fake server.",
+        "ideasTaken": ["None copied; Tests/cgos uses a real (loopback) TCP fake_cgos_server.py instead, since docs/spec/04-tasks.md T30 explicitly asks for two real client *processes* driving two real engine subprocesses through it."]
+      },
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/.tools/cgos-client/bin/cgosclient.py",
+        "sha256AtReadTime": "04fee4b3a4964710a9f19d6f71d715c67aaf9da1f784e41c89a92d7948636925",
+        "role": "A locally-audited near-identical copy of the pinned public revision's client-python/src/cgosclient.py (byte-diff: one `os.makedirs(logdir, exist_ok=True)` empty-string guard; otherwise identical). Read only to corroborate that the public fetch above was not tampered with/outdated relative to what a prior audit already trusted.",
+        "ideasTaken": ["None beyond what is already listed under the pinned public file above."]
+      },
+      {
+        "path": "~/dev/univ/koubou/katago-mlx/.tools/cgos-client/bin/gtpengine.py",
+        "sha256AtReadTime": "00121d3fa90be7d45a05d4724ce7200c86fd98732a9f5e46089ba4d654ed626e",
+        "role": "Same corroboration as above, for gtpengine.py (byte-diff: same os.makedirs guard).",
+        "ideasTaken": ["None beyond what is already listed under the pinned public file above."]
+      }
+    ]
+  },
+  "producedFiles": [
+    {"path": "Scripts/cgos/ichigo_cgos_client.py", "sha256AtWriteTime": "eda0036e4303ee8779d584dd838684cfabf5fe4ec498f1c5f6a54d5ec3fec90e"},
+    {"path": "Scripts/cgos/fake_cgos_server.py", "sha256AtWriteTime": "1005d2d7f070fe7850b7bbfab6e0e79a84be357ae7537d543ef3ebc05bc2a065"}
+  ],
+  "licensing": "No lines were copied from either the GPL-3.0 client-python files or the MIT server-python files; both were read only to recover the wire protocol (verified against both ends independently) and, for the katago-mlx in-house files, general reconnect/backoff/shutdown/log-rotation design shape. Nothing here requires carrying a GPL-3.0 copyright header into Scripts/cgos/, since no covered expression from the GPL-3.0 files was reproduced -- if that judgment changes on review, the fix is to add the Christian Nentwich GPL-3.0 header to the specific file found to contain copied expression, not to relicense the rest of Scripts/cgos/."
+}

@@ -160,6 +160,7 @@ class FakeCGOSServer:
         self._next_gid = 1
         self._disconnect_after: Dict[str, int] = {}
         self._analysis_log: List[dict] = []
+        self._pair_game_count: Dict[frozenset, int] = {}
 
     # -- lifecycle ------------------------------------------------------------------
 
@@ -197,11 +198,13 @@ class FakeCGOSServer:
     # -- test-facing accessors -------------------------------------------------------
 
     def inject_disconnect(self, username: str, before_move_number: int) -> None:
-        """Forcibly closes ``username``'s connection right before they would be asked to make
-        move number ``before_move_number`` of their current/next game (1-indexed ply count across
-        both colours). One-shot: fires once, then clears itself. The game stays open server-side
-        (matching the real server: only the socket entry is dropped) so a later reconnect+login
-        gets a resume ``setup`` with the full move history so far.
+        """Forcibly closes ``username``'s connection right before their own
+        ``before_move_number``-th move (1-indexed, counting only this player's own moves in their
+        current/next game -- colour-independent, since which colour a username is dealt depends
+        on connection-race ordering during pairing). One-shot: fires once, then clears itself.
+        The game stays open server-side (matching the real server: only the socket entry is
+        dropped) so a later reconnect+login gets a resume ``setup`` with the full move history so
+        far.
         """
         with self._lock:
             self._disconnect_after[username] = before_move_number
@@ -356,11 +359,15 @@ class FakeCGOSServer:
                     if conn_b is not None:
                         self._waiting.insert(0, b)
                     continue
-                # Alternate who plays white/black across successive games for variety.
-                if self._next_gid % 2 == 1:
-                    white, black = a, b
-                else:
-                    white, black = b, a
+                # Alternate who plays white/black across successive games between this specific
+                # pair of usernames (docs/spec/05-validation.md §6 "色交換"), keyed by the pair
+                # itself rather than connection-race pop order so it is deterministic regardless
+                # of which client happened to log in/reconnect first.
+                key = frozenset((a, b))
+                count = self._pair_game_count.get(key, 0)
+                first, second = sorted((a, b))
+                white, black = (first, second) if count % 2 == 0 else (second, first)
+                self._pair_game_count[key] = count + 1
                 self._start_game(white, black)
 
     def _start_game(self, white: str, black: str) -> None:
@@ -389,11 +396,14 @@ class FakeCGOSServer:
                 # Currently disconnected; the resume path in _handle_password will pick this
                 # back up (it checks game.to_move() against the reconnecting colour).
                 return
-            move_number = len(game.moves) + 1
+            own_move_number = sum(1 for m in game.moves if m.color == color) + 1
             target = self._disconnect_after.get(uname)
-            if target is not None and target == move_number:
+            if target is not None and target == own_move_number:
                 del self._disconnect_after[uname]
-                self.log.info("test hook: disconnecting %s before move %d of game %s", uname, move_number, game.gid)
+                self.log.info(
+                    "test hook: disconnecting %s before their own move %d of game %s",
+                    uname, own_move_number, game.gid,
+                )
                 self._force_close(conn)
                 return
             conn.expect = "genmove"
@@ -448,7 +458,9 @@ class FakeCGOSServer:
         """Caller must hold self._lock."""
         game.result = result
         game.finished_at = time.monotonic()
-        date = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+        # A single whitespace-free token: the wire protocol is whitespace-delimited, and a date
+        # containing a space (e.g. "%Y-%m-%d %H:%M:%S") would silently shift every field after it.
+        date = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         for uname in (game.white, game.black):
             conn = self._connections.get(uname)
             if conn is not None:
