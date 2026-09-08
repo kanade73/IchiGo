@@ -279,3 +279,42 @@ RinGo の `Search.swift`（KataGo 全パラメータ移植、graph search 含む
 ### 2026-09-09 06:25 巡回
 
 - クラッシュなし。完了: base gl10（512×12、100k）hard top1 0.371 / MAE 0.300 / score MAE 6.67（logic 系で top1 最良）、gl10 200k 0.364 / 0.289 / 6.46（value・score は最良）。phase 4 は 29k〜102k step で進行中。GPU 4/6/7/8/9 は空き。
+
+### 2026-09-09 午前: phase 4 結果と phase 5 起動
+
+- phase 4 完了分（200k step、gateLR 0.1、局所配線）: gateLR 0.3 版 hard top1 **0.381** / MAE 0.293（policy 最良）、bank30 版 0.377 / **0.290**。幅 512・16 層系は進行中（16 層は同 step で劣る）。
+- phase 5（学習方式の実験、Codex 実装、pytest 115 件通過）を GPU 4/6/7/8/9 で起動: Gumbel-STE（small 局所 / base 局所）、tauStart 0.5 + gate エントロピー罰則 0.01、learned-k（K=8 候補からの配線学習）、learned-k + Gumbel。learned-k は 0.27 秒/step（K 倍の gather）。
+- 新 config キー: `tauStart`、`gateEntropyWeight`、`wiringMode`（fixed / learned-k）、`wiringCandidates`、`wiringTau`。export は常に固定配線・argmax gate の v1 形式。
+
+---
+
+## T28: 時計・watchdog（2026-09-09 追記）
+
+対象: `docs/spec/03-engine.md` §8。依存 T20/T21 完了済み。Swift のみ（`Sources/LogicModel`、`Sources/IchiGoFeatures` は不変更）。
+
+### 成果物
+
+| ファイル | 内容 |
+|---|---|
+| `Sources/IchiGoEngine/TimeManager.swift`（新規） | `MonotonicClock` protocol / `SystemMonotonicClock`、`TimeManager.reserve/estimatedMoves/budget/percentile95/stopMargin`（すべて純関数）、`validateSuddenDeath(byo:stones:)` |
+| `Sources/IchiGoEngine/DeadlineController.swift`（新規） | `Search.run` を非構造化 `Task` ＋ `CommitGate`（actor）でwatchdog包装。fallback順: `savedRootCandidate`→`rootPolicyBestMove`→`legalMovesAscendingFallback`の先頭→pass |
+| `Sources/IchiGoEngine/Search.swift` | `run(visits:deadline:)` 追加（deadline手前でnew batch停止、batch p95を記録）。`evaluateBatch` にgeneration引数を追加し、**mutate（expand/backup）前に**generation一致を確認して不一致なら黙って破棄＋reservation解放（従来はbackup後に判定していたため、actor reentrancy中に古い世代の結果が木へ書き込まれ得た）。`savedRootCandidate`/`rootPolicyBestMove`/`legalMovesAscendingFallback` を追加。`init` に `clock` パラメータ追加（デフォルト `SystemMonotonicClock()`）、既存呼び出しは無変更で動作 |
+| `Sources/IchiGoGTP/GTPEngine.swift` | `time_settings` 受理時のみ `TimeManager.budget` からdeadline算出、`DeadlineController.run` 経由でgenmove/kata-genmove_analyzeをcommit。`time_settings`なしは従来通り固定visits・deadlineなし。budget/実測時間/timedOutをstderrへログ |
+| `Tests/IchiGoEngineTests/TimeTests.swift`（新規、12 tests） | `FakeClock`（`sleep(until:)`をcontinuationで実装、`advance`/`set`/`waitForWaiters`）、`DelayedEvaluator`（同じclockでparkできるfake evaluator）を使用 |
+| `Tests/IchiGoGTPTests/GTPEngineTests.swift`（2 tests追加） | `SlowEvaluator`（実時間delay）、`LogCapture` |
+
+### 設計判断（仕様が明示していない点）
+
+- **generation dropの挙動**: 遅い評価結果が「既存のgeneration guardを拡張」する形で、mutateする前にチェックする設計に変更。従来はbackup後にgenerationを確認していたため、makeMove/resetがreentrancy中に走ると古い世代の訪問数がすでに（再利用された可能性のある）木へ加算されてから初めて例外を投げていた。新設計では`evaluate`のawaitから戻った直後、expand/backupの前に一致確認し、不一致なら該当パスのreservationだけ解放して即returnする（例外を投げない）。`run`側の各`await`直後にも同様のガードを追加（`clock.now()`自体もactorのreentrancyポイントのため）。`run`自体は不一致を検知すると例外を投げる（そのgenerationにはもう属さない`root`を使って結果を返す意味がないため）が、この例外はDeadlineControllerが握りつぶすorphan taskからは誰にも観測されない。
+- **watchdogの実装**: `withThrowingTaskGroup`ではなく非構造化`Task`を使用。理由: TaskGroupはクロージャがreturnする前に残っている子taskの完了を暗黙に待つため、キャンセルに応答しない（将来のMetal等の）evaluatorを待ってしまい、watchdogの意味が失われる。`CommitGate`（`tryCommit()`が最初の1呼び出しだけtrueを返すactor）で「search自身の完了」と「deadline watchdog」のどちらか一方だけが`Search.makeMove`を呼ぶことを保証。`makeMove`自体がgenerationを進めるため、勝者が確定した時点で遅延taskの結果は自動的に無効化される（別途invalidateは不要）。
+- **fallback判定**: 3段とも同期的にroot状態を読むだけ（NN呼び出しなし）。tier1/2は`root.evaluated`/`edges`のvisits・prior比較（tie-breakは既存`chooseMove`と同じ: 大きい方優先、同点は小さいindex優先）、tier3は`root.state.snapshot().legal`から最小index。
+- **GTPEngineでのvisits上限**: `time_settings`が有効な間はdeadlineが実質的な停止条件のため、`config.visits`ではなく`config.searchSettings.maxNodes`をvisits上限として渡す（無関係な小さい固定visitsでdeadline前に終わらないようにする）。
+- **time_leftの優先順位**: 既存実装通り、`time_left`コマンドが`timeLeft[color]`を無条件上書きするため「サーバー値が優先」を自動的に満たす。genmove側は使った分だけ実測経過時間でローカル値を減算する。
+
+### 検証
+
+`swift test --filter 'IchiGoEngineTests|IchiGoGTPTests'`: 28 tests、0 failures（3回連続実行して安定を確認）。`swift test`（全target）: 144 tests、0 failures（既存ターゲットへの影響なし）。`swift build`: warning/error なし。
+
+カバー内容: `R=0/0.05/1/300`秒のbudget手計算一致、reserve/estimatedMoves/stopMarginの境界値、`time_settings`のsudden-death以外拒否、fallback 3段の直接検証、実clockでdeadline手前にnew batchを止める（visits target未達で終了）、DeadlineControllerの通常完了commit、budget=0でも即legal move、slow evaluator（fake clockでdelay=1000 vs deadline=1）でfallbackが即返り commit exactly once、**exact-tie race（evaluatorがdeadlineと同時刻に解決するよう`FakeClock`で強制、25回ループ）で常にgeneration=1（commit 1回）**、`makeMove`によるinvalidation後に遅延結果が届いても木のgeneration/visits/moves countが不変（generation-id dropの直接テスト）。GTP層: `time_left=0`で即legal move、`time_settings`下でSlowEvaluator（実3秒delay）でもgenmoveが2秒以内に戻りstderrログに`timedOut=true`が出る。
+
+CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）は範囲外のまま：watchdogが遅延taskを`cancel()`するのはbest-effort（`Task.sleep`ベースのfake evaluatorはcancellationに応答するが、将来の非協調的backendはこれに依存しない設計）。

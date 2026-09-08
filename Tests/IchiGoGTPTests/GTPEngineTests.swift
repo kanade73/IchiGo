@@ -27,6 +27,37 @@ actor UniformEvaluator: PositionEvaluating {
     func preWarm(size: Int) async throws {}
 }
 
+/// Fake evaluator (Tests only) with a real (`Task.sleep`-backed) delay, for exercising the T28
+/// clock/watchdog wiring against a genuinely slow backend without needing a fake clock at the GTP
+/// layer — the exact-tie/generation-drop races are already covered directly against `Search` and
+/// `DeadlineController` in `Tests/IchiGoEngineTests/TimeTests.swift`.
+actor SlowEvaluator: PositionEvaluating {
+    let capabilities: ModelCapabilities
+    let delayNanos: UInt64
+    init(sizes: Set<Int>, delayNanos: UInt64) {
+        capabilities = ModelCapabilities(boardSizes: sizes, rulesID: IchiGoRules.rulesID, hasOwnership: true)
+        self.delayNanos = delayNanos
+    }
+    func evaluate(_ positions: [PositionSnapshot]) async throws -> [LogicEvaluation] {
+        try await Task.sleep(nanoseconds: delayNanos)
+        return positions.map { s in
+            let P = s.boardSize * s.boardSize
+            let n = Float(s.legal.reduce(0) { $0 + Int($1) })
+            let policy = s.legal.map { Float($0) / n }
+            return LogicEvaluation(policy: policy, winDrawLoss: [0.4, 0.2, 0.4], expectedResult: 0.5, scoreMean: 0, ownership: [Float](repeating: 0, count: P))
+        }
+    }
+    func preWarm(size: Int) async throws {}
+}
+
+/// Thread-safe log sink (Tests only) so a test can assert on what `GTPEngine` writes to stderr.
+final class LogCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ s: String) { lock.lock(); lines.append(s); lock.unlock() }
+    func snapshot() -> [String] { lock.lock(); defer { lock.unlock() }; return lines }
+}
+
 final class GTPEngineTests: XCTestCase {
     private func expect(_ e: GTPEngine, _ line: String, _ expected: String, file: StaticString = #filePath, fileLine: UInt = #line) async {
         let got = await e.handle(line: line)
@@ -112,5 +143,41 @@ final class GTPEngineTests: XCTestCase {
             let score = await e.handle(line: "final_score")
             XCTAssertTrue(score.hasPrefix("= "))
         }
+    }
+
+    // MARK: - T28 clock / watchdog
+
+    /// docs/spec/03-engine.md §8: `time_left=0` must still produce a legal move quickly (the
+    /// budget is 0, so genmove goes straight down the `DeadlineController` fallback path).
+    func testTimeLeftZeroProducesLegalMoveQuickly() async throws {
+        let e = try makeEngine(sizes: [9], visits: 400)
+        await expect(e, "time_settings 5 0 0", "=\n\n")
+        await expect(e, "time_left b 0 0", "=\n\n")
+        let start = DispatchTime.now()
+        let r = await e.handle(line: "genmove b")
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        XCTAssertTrue(r.hasPrefix("= "), r)
+        let mv = r.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(mv.isEmpty)
+        XCTAssertLessThan(elapsedMs, 2000)
+    }
+
+    /// With `time_settings` active, a slow evaluator must not stall genmove past the computed
+    /// deadline: the watchdog fallback fires and a legal move still comes back promptly.
+    func testSlowEvaluatorUnderTimeControlFallsBackWithinDeadline() async throws {
+        var cfg = GTPEngine.Config(); cfg.visits = 400
+        let slot = GTPEngine.ModelSlot(evaluator: SlowEvaluator(sizes: [9], delayNanos: 3_000_000_000), modelHash: "slow-9")
+        let logs = LogCapture()
+        let e = try GTPEngine(models: [9: slot], config: cfg, log: { logs.append($0) })
+        await expect(e, "time_settings 5 0 0", "=\n\n")
+        await expect(e, "time_left b 0.2 0", "=\n\n")   // small remaining time → a tiny (millisecond-scale) budget
+        let start = DispatchTime.now()
+        let r = await e.handle(line: "genmove b")
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
+        XCTAssertTrue(r.hasPrefix("= "), r)
+        let mv = r.dropFirst(2).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(mv.isEmpty)
+        XCTAssertLessThan(elapsed, 2.0)   // well under the 3s evaluator delay
+        XCTAssertTrue(logs.snapshot().contains { $0.contains("timedOut=true") })
     }
 }
