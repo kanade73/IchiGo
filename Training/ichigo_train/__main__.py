@@ -230,6 +230,31 @@ def cmd_evaluate(args) -> int:
     return EXIT_OK
 
 
+def cmd_match(args) -> int:
+    from .match import MatchRunner, parse_engine_spec
+
+    if args.time_main_seconds is not None and (args.visits_a is not None or args.visits_b is not None):
+        print("error: --time-main-seconds cannot be combined with --visits-a/--visits-b", file=sys.stderr)
+        return EXIT_CONFIG
+    try:
+        engine_a = parse_engine_spec(args.engine_a)
+        engine_b = parse_engine_spec(args.engine_b)
+        openings_path = None if args.openings in (None, "none") else args.openings
+        runner = MatchRunner(
+            engine_a=engine_a, engine_b=engine_b, games=args.games, size=args.size, komi=args.komi,
+            out_dir=args.out, seed=args.seed, openings_path=openings_path, visits_a=args.visits_a,
+            visits_b=args.visits_b, time_main_seconds=args.time_main_seconds, max_moves=args.max_moves,
+            command_timeout=args.command_timeout, genmove_timeout=args.genmove_timeout,
+            resamples=args.resamples, log=lambda msg: print(msg, file=sys.stderr, flush=True),
+        )
+    except (ValueError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_CONFIG
+    report = runner.run()
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m ichigo_train", description="IchiGo training tools (M0 subset).")
     sub = p.add_subparsers(dest="command", required=True)
@@ -296,6 +321,23 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("make-fixtures", help="Regenerate Swift/Python parity and symmetry fixtures.")
     f.add_argument("--out", required=True)
     f.set_defaults(func=cmd_make_fixtures)
+    m = sub.add_parser("match", help="Run a GTP engine-vs-engine (or vs the uniform-legal baseline) match (docs/spec/04-tasks.md T31).")
+    m.add_argument("--engine-a", required=True, help="GTP argv: shell-quoted string or a JSON array of strings, e.g. '.build/release/ichigo gtp --model-9 m.ichigo --visits 100'")
+    m.add_argument("--engine-b", required=True, help="GTP argv (as --engine-a), or the literal 'uniform' for the built-in uniform-legal baseline")
+    m.add_argument("--games", type=int, required=True)
+    m.add_argument("--size", type=int, default=9, choices=[9, 19])
+    m.add_argument("--komi", type=float, default=7.0)
+    m.add_argument("--openings", default="none", help="JSONL of {'id','moves':[gtp,...]} openings, or 'none' for the empty board")
+    m.add_argument("--out", required=True)
+    m.add_argument("--seed", type=int, required=True)
+    m.add_argument("--visits-a", type=int, default=None, help="appended to engine A's argv as '--visits N' (conflicts with --time-main-seconds)")
+    m.add_argument("--visits-b", type=int, default=None, help="appended to engine B's argv as '--visits N' (conflicts with --time-main-seconds)")
+    m.add_argument("--time-main-seconds", type=float, default=None, help="sends 'time_settings T 0 0' (sudden death) instead of a fixed visit count")
+    m.add_argument("--max-moves", type=int, default=None, help="default 4*size*size; exceeding it without two passes ends a game as 'truncated'")
+    m.add_argument("--command-timeout", type=float, default=30.0, help="per-command timeout (seconds) for boardsize/clear_board/komi/play/final_score")
+    m.add_argument("--genmove-timeout", type=float, default=None, help="per-genmove timeout (seconds); default max(120, 4*time-main-seconds)")
+    m.add_argument("--resamples", type=int, default=10000, help="bootstrap resamples for report.json's confidence intervals")
+    m.set_defaults(func=cmd_match)
     return p
 
 
