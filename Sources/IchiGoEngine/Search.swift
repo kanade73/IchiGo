@@ -94,14 +94,20 @@ public actor Search {
     public let settings: SearchSettings
     private let evaluator: any PositionEvaluating
     private let modelHash: String
+    private let clock: any MonotonicClock
     private var root: SearchNode
     private var nodeCount = 1
     private var generation = 0
+    /// Wall-clock duration of the most recent leaf batches (bounded window), used to compute the
+    /// deadline stop margin (docs/spec/03-engine.md §8, `TimeManager.stopMargin`). Only populated
+    /// by time-limited `run(visits:deadline:)` calls.
+    private var recentBatchDurations: [Double] = []
 
-    public init(evaluator: any PositionEvaluating, modelHash: String, settings: SearchSettings = SearchSettings(), initial: GameRecord) throws {
+    public init(evaluator: any PositionEvaluating, modelHash: String, settings: SearchSettings = SearchSettings(), initial: GameRecord, clock: any MonotonicClock = SystemMonotonicClock()) throws {
         self.evaluator = evaluator
         self.modelHash = modelHash
         self.settings = settings
+        self.clock = clock
         root = SearchNode(state: try GameState(record: initial))
     }
 
@@ -143,28 +149,97 @@ public actor Search {
 
     // MARK: - search
 
-    /// Runs until the root has `visits` visits (including the root's own evaluation) or the node
-    /// budget is exhausted or the task is cancelled. Returns the chosen move (max edge visits,
-    /// ties → prior, then policy index).
-    public func run(visits target: Int) async throws -> SearchResult {
+    /// Runs until the root has `visits` visits (including the root's own evaluation), the node
+    /// budget is exhausted, the task is cancelled, or (when `deadline` is given, as a monotonic
+    /// instant from the injected `clock`) the clock is within the stop margin of the deadline.
+    /// Returns the chosen move (max edge visits, ties → prior, then policy index) computed from
+    /// whatever the tree looks like at that point — with a deadline this may be far short of
+    /// `target`.
+    ///
+    /// The stop margin (`TimeManager.stopMargin`, `max(0.01, 2 * p95(recent batch durations))`) is
+    /// checked *before* issuing each new leaf batch, so an in-flight batch is never abandoned —
+    /// only the next one is skipped. The root's own (mandatory) first evaluation is never skipped
+    /// by the deadline: a caller that cannot even wait for that should race this call with
+    /// `DeadlineController` instead of expecting `run` to bail out early.
+    ///
+    /// Every request this method issues to `evaluator.evaluate` is tagged with the generation
+    /// captured at the start of this call. `Search` is an actor, so the `await` on that call is a
+    /// reentrancy point: another task can call `makeMove`/`reset` on the same actor while this one
+    /// is suspended, which bumps `generation` and (on `makeMove`) replaces `root` — possibly with a
+    /// node this very call's in-flight path passes through. If the generation has moved by the
+    /// time the evaluator answers, the result is a *late result from a previous generation*: it is
+    /// dropped without ever mutating the tree (no `expand`/`backup`), and only the reservations
+    /// placed on that path are released, so a reused subtree is never left with permanent phantom
+    /// virtual losses. This call itself still throws once it notices its generation is stale (there
+    /// is no partial result worth returning under a generation that no longer owns `root`) — but
+    /// nothing it observed after the mismatch was ever applied to the tree.
+    public func run(visits target: Int, deadline: Double? = nil) async throws -> SearchResult {
         let gen = generation
         if root.terminal != nil { return try result(chosen: .pass) }
         if !root.evaluated {
-            try await evaluateBatch([[root]])
+            try await evaluateBatch([[root]], generation: gen)
             guard gen == generation else { throw SearchError(message: "search invalidated") }
         }
         while root.visits < target, !Task.isCancelled {
+            if let deadline {
+                // `clock.now()` is itself a suspension point on this actor (any `await` is), so a
+                // concurrent `makeMove`/`reset` could run before it returns — re-check generation
+                // before trusting `root`/`settings` again.
+                let now = await clock.now()
+                guard gen == generation else { throw SearchError(message: "search invalidated") }
+                if now + TimeManager.stopMargin(recentBatchDurations: recentBatchDurations) >= deadline { break }
+            }
             let batch = collectBatch(limit: min(settings.leafBatch, target - root.visits))
             if batch.isEmpty { break }
+            let batchStart = deadline != nil ? await clock.now() : nil
+            guard gen == generation else { releaseAll(batch); throw SearchError(message: "search invalidated") }
             do {
-                try await evaluateBatch(batch)
+                try await evaluateBatch(batch, generation: gen)
             } catch {
                 releaseAll(batch)
                 throw error
             }
-            guard gen == generation else { releaseAll(batch); throw SearchError(message: "search invalidated") }
+            if let batchStart { recordBatchDuration(await clock.now() - batchStart) }
+            guard gen == generation else { throw SearchError(message: "search invalidated") }
         }
         return try result(chosen: chooseMove())
+    }
+
+    private func recordBatchDuration(_ d: Double) {
+        recentBatchDurations.append(d)
+        if recentBatchDurations.count > 32 { recentBatchDurations.removeFirst(recentBatchDurations.count - 32) }
+    }
+
+    /// Best root child by visits (ties → prior, then index) — fallback tier 1 for
+    /// `DeadlineController`. `nil` until at least one leaf batch beyond the root's own evaluation
+    /// has completed.
+    public func savedRootCandidate() -> MoveCoord? {
+        var best: SearchNode.Edge? = nil
+        for e in root.edges where e.visits > 0 {
+            if best == nil || e.visits > best!.visits || (e.visits == best!.visits && e.prior > best!.prior) { best = e }
+        }
+        return best?.move
+    }
+
+    /// Root child with the highest policy prior (ties → index) — fallback tier 2. `nil` until the
+    /// root has been NN-evaluated at all.
+    public func rootPolicyBestMove() -> MoveCoord? {
+        guard root.evaluated else { return nil }
+        var best: SearchNode.Edge? = nil
+        for e in root.edges where best == nil || e.prior > best!.prior { best = e }
+        return best?.move
+    }
+
+    /// Legal moves at the root in ascending point index order, pass last — fallback tier 3
+    /// (smallest-index legal point; the caller falls back to pass itself if this is empty). Reads
+    /// `root.state` directly, so it never needs (or waits for) an NN evaluation.
+    public func legalMovesAscendingFallback() -> [MoveCoord] {
+        let snap = root.state.snapshot()
+        var out: [MoveCoord] = []
+        for i in snap.legal.indices where snap.legal[i] == 1 {
+            out.append(try! Coordinates.move(fromIndex: i, size: snap.boardSize))
+        }
+        return out
     }
 
     private func collectBatch(limit: Int) -> [[SearchNode]] {
@@ -245,12 +320,22 @@ public actor Search {
         for p in batch { releasePath(p) }
     }
 
-    private func evaluateBatch(_ batch: [[SearchNode]]) async throws {
+    /// Evaluates and backs up one leaf batch, tagged with the `generation` captured by the caller
+    /// when it issued this request. See `run(visits:deadline:)` for why: the `await` below is a
+    /// reentrancy point on this actor, so `generation` may have moved by the time it returns.
+    private func evaluateBatch(_ batch: [[SearchNode]], generation gen: Int) async throws {
         let need = batch.filter { $0.last!.terminal == nil && !$0.last!.evaluated }
-        var evals: [LogicEvaluation] = []
         if !need.isEmpty {
             let snaps = need.map { $0.last!.state.snapshot() }
-            evals = try await evaluator.evaluate(snaps)
+            let evals = try await evaluator.evaluate(snaps)
+            guard gen == generation else {
+                // Late result from a previous generation (`makeMove`/`reset` ran while this
+                // request was in flight): drop it before touching a single node. Reservations on
+                // this path are released so a subtree that got reused into the new generation is
+                // not left with a permanent virtual loss.
+                releaseAll(batch)
+                return
+            }
             guard evals.count == need.count else { throw SearchError(message: "evaluator returned \(evals.count) results for \(need.count) leaves") }
             for (path, (snap, e)) in zip(need, zip(snaps, evals)) {
                 let leaf = path.last!

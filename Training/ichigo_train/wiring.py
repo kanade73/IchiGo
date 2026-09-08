@@ -90,6 +90,31 @@ class Wiring:
         return self.wiring.shape[1]
 
 
+@dataclass
+class WiringCandidates:
+    """Candidate references used by the learnable-wiring experiment.
+
+    ``candidates`` has shape ``[L,C,2,K,4]``. ``theta`` is kept alongside it so this object
+    can be passed anywhere the fixed ``Wiring`` initializer is accepted.
+    """
+
+    candidates: np.ndarray
+    theta: np.ndarray
+    dilations: list[int] = field(default_factory=list)
+
+    @property
+    def wiring(self) -> np.ndarray:
+        return self.candidates[:, :, :, 0, :]
+
+    @property
+    def layers(self) -> int:
+        return self.candidates.shape[0]
+
+    @property
+    def channels(self) -> int:
+        return self.candidates.shape[1]
+
+
 def bank_channels(layer: int, bank: int, channels: int) -> int:
     if bank == 0:
         return INPUT_CHANNELS if layer == 0 else channels
@@ -139,6 +164,53 @@ def generate_wiring(spec: ModelSpec) -> Wiring:
             else:
                 theta[l, c, :] = rng.normal(0.0, THETA_STD, size=16).astype(np.float32)
     return Wiring(wiring=wiring, theta=theta, dilations=list(spec.dilations))
+
+
+def generate_wiring_candidates(spec: ModelSpec, candidates: int) -> WiringCandidates:
+    """Generate K candidate references using the same PCG64 draw rules as fixed wiring.
+
+    The K=1 path delegates to ``generate_wiring`` so it is byte-for-byte identical to the fixed
+    wiring contract, including the theta random-draw stream. For K>1 each candidate pair follows
+    the existing A-then-B draw order and avoids A==B for its corresponding pair.
+    """
+    if not isinstance(candidates, int) or candidates <= 0:
+        raise ValueError("candidates must be a positive integer")
+    base = generate_wiring(spec)
+    if candidates == 1:
+        return WiringCandidates(
+            candidates=np.expand_dims(base.wiring, axis=3).copy(),
+            theta=base.theta.copy(),
+            dilations=list(spec.dilations),
+        )
+
+    seed = spec.wiring_seed if spec.wiring_seed is not None else spec.seed
+    rng = np.random.Generator(np.random.PCG64(seed))
+    L, C = spec.layers, spec.channels
+    table = np.zeros((L, C, 2, candidates, 4), dtype=np.int32)
+    for l in range(L):
+        d = spec.dilations[l]
+        for c in range(C):
+            for k in range(candidates):
+                if l == 0:
+                    a = (0, c % INPUT_CHANNELS, 0, 0)
+                elif c % 4 == 0:
+                    a = (0, c, 0, 0)
+                else:
+                    a = _draw_reference(rng, l, C, d, spec.bank1_ratio)
+                b = _draw_reference(rng, l, C, d, spec.bank1_ratio)
+                while b == a:
+                    b = _draw_reference(rng, l, C, d, spec.bank1_ratio)
+                table[l, c, 0, k] = a
+                table[l, c, 1, k] = b
+
+    theta = np.zeros((L, C, 16), dtype=np.float32)
+    for l in range(L):
+        for c in range(C):
+            if c % 4 == 0:
+                theta[l, c, IDENTITY_GATE] = IDENTITY_THETA
+            else:
+                theta[l, c, :] = rng.normal(0.0, THETA_STD, size=16).astype(np.float32)
+    return WiringCandidates(candidates=table, theta=theta, dilations=list(spec.dilations))
 
 
 def validate_wiring(wiring: np.ndarray, dilations: list[int]) -> None:

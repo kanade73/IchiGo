@@ -41,7 +41,11 @@ def load_checkpoint(path: str) -> LogicNet:
 
 
 def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: dict | None = None, overwrite: bool = False) -> dict:
-    """Write ``out`` (a directory). Returns the manifest. Gates are the argmax of theta."""
+    """Write ``out`` (a directory). Returns the manifest.
+
+    Learned wiring is resolved to its argmax fixed wiring (with the A!=B fallback) before the
+    normal ``.ichigo`` serializer runs; the on-disk format remains unchanged.
+    """
     out = os.path.normpath(out)
     if os.path.lexists(out):
         if not overwrite:

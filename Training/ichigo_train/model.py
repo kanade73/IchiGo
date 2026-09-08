@@ -20,7 +20,7 @@ import torch
 from torch import nn
 
 from . import gates as G
-from .wiring import INPUT_CHANNELS, ModelSpec, Wiring, generate_wiring, validate_wiring
+from .wiring import INPUT_CHANNELS, ModelSpec, Wiring, generate_wiring, generate_wiring_candidates, validate_wiring
 
 HEAD_LOCAL = 64
 HEAD_GLOBAL = 128
@@ -92,20 +92,29 @@ class LayerGather:
         self.padded = P
         bank0_len = P * P * self.c0
         C = wiring_layer.shape[0]
-        idx = np.empty((size, size, C, 2), dtype=np.int64)
+        if wiring_layer.ndim == 3:
+            refs = wiring_layer[:, :, None, :]
+        elif wiring_layer.ndim == 4:
+            refs = wiring_layer
+        else:
+            raise ValueError(f"wiring layer must be [C,2,4] or [C,2,K,4], got {wiring_layer.shape}")
+        K = refs.shape[2]
+        idx = np.empty((size, size, C, 2, K), dtype=np.int64)
         ys = np.arange(size)[:, None] + pad
         xs = np.arange(size)[None, :] + pad
         for c in range(C):
             for k in range(2):
-                bank, ch, dx, dy = (int(v) for v in wiring_layer[c, k])
-                cin = self.c0 if bank == 0 else self.c1
-                base = 0 if bank == 0 else bank0_len
-                idx[:, :, c, k] = base + (((ys + dy) * P + (xs + dx)) * cin + ch)
-        self.index = torch.from_numpy(idx.reshape(-1))
-        self.uses_bank1 = bool((wiring_layer[:, :, 0] == 1).any())
+                for q in range(K):
+                    bank, ch, dx, dy = (int(v) for v in refs[c, k, q])
+                    cin = self.c0 if bank == 0 else self.c1
+                    base = 0 if bank == 0 else bank0_len
+                    idx[:, :, c, k, q] = base + (((ys + dy) * P + (xs + dx)) * cin + ch)
+        self.k = K
+        self.index = torch.from_numpy(idx)
+        self.uses_bank1 = bool((refs[:, :, :, 0] == 1).any())
 
-    def gather(self, prev: torch.Tensor, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """``prev`` [B,S,S,Cin0], ``inputs`` [B,S,S,32] -> (a, b) each [B,S,S,C]."""
+    def gather_candidates(self, prev: torch.Tensor, inputs: torch.Tensor) -> torch.Tensor:
+        """Return candidate activations [B,S,S,C,2,K] without materialising full gate mixtures."""
         B = prev.shape[0]
         p = self.pad
         flat0 = torch.nn.functional.pad(prev, (0, 0, p, p, p, p)).reshape(B, -1)
@@ -114,24 +123,52 @@ class LayerGather:
             flat = torch.cat([flat0, flat1], dim=1)
         else:
             flat = flat0
-        index = self.index.to(prev.device)
-        g = flat[:, index].reshape(B, self.size, self.size, -1, 2)
+        index = self.index.to(prev.device).reshape(-1)
+        return flat[:, index].reshape(B, self.size, self.size, -1, 2, self.k)
+
+    def gather(self, prev: torch.Tensor, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather fixed references; a K=1 candidate table is reduced to A/B tensors."""
+        g = self.gather_candidates(prev, inputs)
+        if self.k != 1:
+            raise ValueError("gather() is only valid for a fixed or K=1 wiring table")
+        g = g[..., 0]
         return g[..., 0], g[..., 1]
 
 
 class LogicNet(nn.Module):
-    def __init__(self, spec: ModelSpec, wiring: Wiring | None = None, heads: dict[str, np.ndarray] | None = None, head_version: int = HEAD_VERSION):
+    def __init__(self, spec: ModelSpec, wiring: Wiring | None = None, heads: dict[str, np.ndarray] | None = None,
+                 head_version: int = HEAD_VERSION, wiring_mode: str = "fixed", wiring_candidates: int = 8,
+                 candidate_wiring: np.ndarray | None = None, wiring_tau: float = 1.0):
         super().__init__()
         if head_version not in SUPPORTED_HEAD_VERSIONS:
             raise ValueError(f"unsupported headVersion {head_version}")
+        if wiring_mode not in ("fixed", "learned-k"):
+            raise ValueError("wiring_mode must be fixed or learned-k")
         self.head_version = head_version
+        self.wiring_mode = wiring_mode
+        self.wiring_tau = float(wiring_tau)
         self.spec = spec
+        if wiring_mode == "learned-k" and candidate_wiring is None:
+            generated = generate_wiring_candidates(spec, wiring_candidates)
+            candidate_wiring = generated.candidates
+            if wiring is None:
+                wiring = Wiring(wiring=generated.wiring, theta=generated.theta, dilations=generated.dilations)
         if wiring is None:
             wiring = generate_wiring(spec)
         validate_wiring(wiring.wiring, spec.dilations)
         self.channels = spec.channels
         self.dilations = list(spec.dilations)
         self.register_buffer("wiring", torch.from_numpy(wiring.wiring.astype(np.int32)), persistent=True)
+        if wiring_mode == "learned-k":
+            candidate_wiring = np.asarray(candidate_wiring, dtype=np.int32)
+            if candidate_wiring.ndim != 5 or candidate_wiring.shape[:3] != (spec.layers, spec.channels, 2) or candidate_wiring.shape[4] != 4:
+                raise ValueError(f"candidate wiring must be [L,C,2,K,4], got {candidate_wiring.shape}")
+            if candidate_wiring.shape[3] != wiring_candidates:
+                wiring_candidates = int(candidate_wiring.shape[3])
+            for k in range(candidate_wiring.shape[3]):
+                validate_wiring(candidate_wiring[:, :, :, k, :], spec.dilations)
+            self.register_buffer("candidate_wiring", torch.from_numpy(candidate_wiring), persistent=True)
+            self.phi = nn.Parameter(torch.zeros(spec.layers, spec.channels, 2, candidate_wiring.shape[3], dtype=torch.float32))
         self.theta = nn.Parameter(torch.from_numpy(wiring.theta.astype(np.float32)))
         if heads is None:
             rng = np.random.Generator(np.random.PCG64(spec.seed + 1))
@@ -141,11 +178,42 @@ class LogicNet(nn.Module):
             if tuple(np.shape(heads[n])) != expected[n]:
                 raise ValueError(f"head tensor {n} has shape {np.shape(heads[n])}, expected {expected[n]} for headVersion {head_version}")
         self.heads = nn.ParameterDict({n: nn.Parameter(torch.from_numpy(np.array(heads[n], dtype=np.float32))) for n in HEAD_TENSOR_NAMES})
-        self._gathers: dict[tuple[int, int], LayerGather] = {}
+        self._gathers: dict[tuple[int, int, str], LayerGather] = {}
 
     # ----- wiring helpers -----
     def wiring_numpy(self) -> np.ndarray:
-        return self.wiring.detach().cpu().numpy().astype(np.int32)
+        return self.hard_wiring_numpy()
+
+    def candidate_wiring_numpy(self) -> np.ndarray | None:
+        if self.wiring_mode != "learned-k":
+            return None
+        return self.candidate_wiring.detach().cpu().numpy().astype(np.int32)
+
+    def hard_wiring_numpy(self) -> np.ndarray:
+        """Return the ordinary fixed wiring used by hard forward and export."""
+        if self.wiring_mode != "learned-k":
+            return self.wiring.detach().cpu().numpy().astype(np.int32)
+        candidates = self.candidate_wiring_numpy()
+        logits = self.phi.detach().cpu().numpy()
+        out = np.empty(candidates.shape[:3] + (4,), dtype=np.int32)
+        adjusted = 0
+        for l in range(candidates.shape[0]):
+            for c in range(candidates.shape[1]):
+                ai = int(np.argmax(logits[l, c, 0]))
+                a = candidates[l, c, 0, ai]
+                order = np.argsort(-logits[l, c, 1], kind="stable")
+                bi = next((int(i) for i in order if not np.array_equal(candidates[l, c, 1, i], a)), None)
+                if bi is None:
+                    raise ValueError(f"layer {l} channel {c}: no B candidate distinct from selected A")
+                if np.array_equal(candidates[l, c, 1, int(order[0])], a):
+                    adjusted += 1
+                out[l, c, 0] = a
+                out[l, c, 1] = candidates[l, c, 1, bi]
+        if adjusted:
+            import logging
+            logging.getLogger(__name__).warning("learned wiring adjusted %d A==B argmax selections", adjusted)
+        validate_wiring(out, self.dilations)
+        return out
 
     def hard_gates(self) -> np.ndarray:
         """``uint8 [L, C]`` argmax gate ids (smallest id on ties)."""
@@ -154,10 +222,15 @@ class LogicNet(nn.Module):
     def head_numpy(self) -> dict[str, np.ndarray]:
         return {n: self.heads[n].detach().cpu().numpy().astype(np.float32) for n in HEAD_TENSOR_NAMES}
 
-    def gather_for(self, layer: int, size: int) -> LayerGather:
-        key = (layer, size)
+    def gather_for(self, layer: int, size: int, hard: bool = False, hard_wiring: np.ndarray | None = None) -> LayerGather:
+        if hard and self.wiring_mode == "learned-k":
+            refs = self.hard_wiring_numpy() if hard_wiring is None else hard_wiring
+            return LayerGather(refs[layer], layer, size, self.channels, self.dilations[layer])
+        kind = "soft" if self.wiring_mode == "learned-k" else "fixed"
+        key = (layer, size, kind)
         if key not in self._gathers:
-            self._gathers[key] = LayerGather(self.wiring_numpy()[layer], layer, size, self.channels, self.dilations[layer])
+            refs = self.candidate_wiring_numpy()[layer] if kind == "soft" else self.wiring.detach().cpu().numpy()[layer]
+            self._gathers[key] = LayerGather(refs, layer, size, self.channels, self.dilations[layer])
         return self._gathers[key]
 
     @staticmethod
@@ -169,24 +242,48 @@ class LogicNet(nn.Module):
         return spatial.shape[1]
 
     # ----- gate layers -----
-    def soft_layers(self, spatial: torch.Tensor, tau: float, frozen_prefix: int = 0) -> list[torch.Tensor]:
+    def soft_layers(self, spatial: torch.Tensor, tau: float, frozen_prefix: int = 0,
+                    gumbel_noise: torch.Tensor | None = None, tau_wire: float | None = None) -> list[torch.Tensor]:
         """Returns all layer outputs (float). Layers < frozen_prefix use hard argmax gates on the
         (already 0/1) activations; the rest use the softmax relaxation."""
         size = spatial.shape[1]
         x = spatial.to(torch.float32)
         outs = []
         hard = None
+        hard_wiring = None
         if frozen_prefix > 0:
             hard = torch.from_numpy(self.hard_gates()).to(spatial.device)
+            if self.wiring_mode == "learned-k":
+                hard_wiring = self.hard_wiring_numpy()
+        if gumbel_noise is not None:
+            if tuple(gumbel_noise.shape) != tuple(self.theta.shape):
+                raise ValueError(f"gumbel_noise must have shape {tuple(self.theta.shape)}, got {tuple(gumbel_noise.shape)}")
+            gumbel_noise = gumbel_noise.to(self.theta.device, dtype=self.theta.dtype)
+        wire_tau = self.wiring_tau if tau_wire is None else tau_wire
+        if wire_tau <= 0:
+            raise ValueError("tau_wire must be positive")
         for l in range(len(self.dilations)):
-            gath = self.gather_for(l, size)
-            a, b = gath.gather(x, spatial.to(torch.float32))
-            if l < frozen_prefix:
+            is_hard_layer = l < frozen_prefix
+            gath = self.gather_for(l, size, hard=is_hard_layer, hard_wiring=hard_wiring)
+            if self.wiring_mode == "learned-k" and not is_hard_layer:
+                candidates = gath.gather_candidates(x, spatial.to(torch.float32))
+                weights = torch.softmax(self.phi[l] / wire_tau, dim=-1).view(1, 1, 1, self.channels, 2, -1)
+                mixed = (candidates * weights).sum(-1)
+                a, b = mixed[..., 0], mixed[..., 1]
+            else:
+                a, b = gath.gather(x, spatial.to(torch.float32))
+            if is_hard_layer:
                 g = hard[l].to(torch.int64)  # [C]
                 row = (2 * a.to(torch.int64) + b.to(torch.int64))
                 y = ((g.view(1, 1, 1, -1) >> row) & 1).to(torch.float32)
             else:
-                t = G.reduce_theta(self.theta[l], tau)  # [C,4]
+                if gumbel_noise is None:
+                    t = G.reduce_theta(self.theta[l], tau)  # [C,4]
+                else:
+                    p = G.gate_probabilities(self.theta[l] + gumbel_noise[l], tau)
+                    h = torch.nn.functional.one_hot(p.argmax(dim=-1), num_classes=G.NUM_GATES).to(p.dtype)
+                    p = h - p.detach() + p
+                    t = p @ G.truth_table_tensor(dtype=p.dtype, device=p.device)
                 y = G.soft_gate_reduced(t.view(1, 1, 1, -1, 4), a, b)
             outs.append(y)
             x = y
@@ -201,10 +298,11 @@ class LogicNet(nn.Module):
             raise ValueError("hard forward requires spatial values in {0,1}")
         size = spatial.shape[1]
         gates = torch.from_numpy(self.hard_gates()).to(spatial.device)
+        hard_wiring = self.hard_wiring_numpy() if self.wiring_mode == "learned-k" else None
         x = spatial
         outs = []
         for l in range(len(self.dilations)):
-            gath = self.gather_for(l, size)
+            gath = self.gather_for(l, size, hard=True, hard_wiring=hard_wiring)
             a, b = gath.gather(x, spatial)
             row = 2 * a.to(torch.int32) + b.to(torch.int32)
             y = ((gates[l].to(torch.int32).view(1, 1, 1, -1) >> row) & 1).to(torch.uint8)
@@ -241,9 +339,10 @@ class LogicNet(nn.Module):
             "ownership": ownership,
         }
 
-    def forward(self, spatial: torch.Tensor, glob: torch.Tensor, tau: float = 1.0, frozen_prefix: int = 0) -> dict[str, torch.Tensor]:
+    def forward(self, spatial: torch.Tensor, glob: torch.Tensor, tau: float = 1.0, frozen_prefix: int = 0,
+                gumbel_noise: torch.Tensor | None = None, tau_wire: float | None = None) -> dict[str, torch.Tensor]:
         self._check_inputs(spatial, glob)
-        outs = self.soft_layers(spatial, tau, frozen_prefix)
+        outs = self.soft_layers(spatial, tau, frozen_prefix, gumbel_noise=gumbel_noise, tau_wire=tau_wire)
         return self.heads_forward(outs[-1], glob.to(torch.float32))
 
     @torch.no_grad()

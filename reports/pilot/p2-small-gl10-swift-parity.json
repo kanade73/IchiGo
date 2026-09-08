@@ -1,0 +1,64 @@
+{
+  "model": "models/p2-small-gl10.ichigo",
+  "count": 8,
+  "samples": [
+    {
+      "index": 0,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 2.86102294921875e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 1,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.5762786865234375e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 2,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.814697265625e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 3,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 2.9802322387695312e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 4,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 2.384185791015625e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 5,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.337860107421875e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 6,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 1.9073486328125e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    },
+    {
+      "index": 7,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 2.86102294921875e-06,
+      "modelHash": "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b"
+    }
+  ],
+  "layerBitExact": true,
+  "headsWithinTolerance": true
+}

@@ -62,4 +62,10 @@ def build_model_from_config(cfg: dict):
     if model_type != "logic":
         raise ValueError(f"unknown modelType {model_type!r}; expected one of {MODEL_TYPES}")
     spec = model_spec_from_config(cfg)
-    return LogicNet(spec, head_version=head_version)
+    return LogicNet(
+        spec,
+        head_version=head_version,
+        wiring_mode=cfg.get("wiringMode", "fixed"),
+        wiring_candidates=cfg.get("wiringCandidates", 8),
+        wiring_tau=cfg.get("wiringTau", 1.0),
+    )

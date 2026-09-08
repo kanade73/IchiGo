@@ -14,7 +14,7 @@ from . import losses as L
 from .data_loader import to_tensors
 from .model import LogicNet
 
-CSV_FIELDS = ["step", "phase", "mode", "tau", "frozenPrefix", "headsOnly", "lrGates", "lrHeads", "gradNorm", "total", "policy",
+CSV_FIELDS = ["step", "phase", "mode", "tau", "tauWire", "frozenPrefix", "headsOnly", "lrGates", "lrHeads", "gradNorm", "total", "gateEntropyLoss", "policy",
               "expected_result", "wdl", "score", "ownership", "policyTop1", "expectedMAE", "expectedBrier", "scoreMAEPoints",
               "ownershipMSE", "softHardPolicyCEDiff", "elapsedSeconds"]
 

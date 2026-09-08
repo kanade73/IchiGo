@@ -15,9 +15,12 @@ from .model import LogicNet
 
 
 def build_optimizer(model: LogicNet, gate_lr: float, head_lr: float, head_wd: float) -> torch.optim.AdamW:
+    gate_params = [model.theta]
+    if getattr(model, "wiring_mode", "fixed") == "learned-k":
+        gate_params.append(model.phi)
     return torch.optim.AdamW([
-        {"params": [model.theta], "lr": gate_lr, "weight_decay": 0.0, "name": "gates"},
-        {"params": list(model.heads.values()), "lr": head_lr, "weight_decay": head_wd, "name": "heads"},
+        {"params": gate_params, "lr": gate_lr, "weight_decay": 0.0, "name": "gates"},
+        {"params": [q for n, q in model.named_parameters() if n not in ("theta", "phi")], "lr": head_lr, "weight_decay": head_wd, "name": "heads"},
     ], betas=(0.9, 0.999), eps=1e-8)
 
 
@@ -38,5 +41,5 @@ def build_scheduler(optimizer: torch.optim.Optimizer, max_steps: int) -> torch.o
 
 
 def clip_gradients(model: LogicNet, max_norm: float) -> float:
-    params = [model.theta] + list(model.heads.values())
+    params = list(model.parameters())
     return float(torch.nn.utils.clip_grad_norm_(params, max_norm))

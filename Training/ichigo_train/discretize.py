@@ -23,9 +23,11 @@ class ScheduleState:
 
 
 class PrefixSchedule:
-    def __init__(self, max_steps: int, layers: int, tau_final: float = 0.2, fractions=(0.6, 0.3, 0.1)):
+    def __init__(self, max_steps: int, layers: int, tau_final: float = 0.2, fractions=(0.6, 0.3, 0.1),
+                 tau_start: float = 1.0):
         self.max_steps = max_steps
         self.layers = layers
+        self.tau_start = tau_start
         self.tau_final = tau_final
         self.s1_end = int(round(max_steps * fractions[0]))
         self.s2_end = int(round(max_steps * (fractions[0] + fractions[1])))
@@ -37,11 +39,32 @@ class PrefixSchedule:
 
     def state_at(self, step: int) -> ScheduleState:
         if step < self.s1_end:
-            return ScheduleState(1.0, 0, False, 1)
+            return ScheduleState(self.tau_start, 0, False, 1)
         if step >= self.s2_end:
             return ScheduleState(self.tau_final, self.layers, True, 3)
         span = max(1, self.s2_end - self.s1_end)
         frac = (step - self.s1_end) / span
-        tau = 1.0 + (self.tau_final - 1.0) * frac
+        tau = self.tau_start + (self.tau_final - self.tau_start) * frac
         frozen = sum(1 for fs in self.freeze_steps() if step >= fs)
         return ScheduleState(tau, min(frozen, self.layers), frozen >= self.layers, 2)
+
+
+class GumbelSchedule:
+    """The ``gumbel-ste-90-10`` schedule from docs/spec/02-training.md §11.3.
+
+    The first 90% of optimizer steps use noisy straight-through gates in every layer. The final
+    10% uses the noise-free hard argmax path and trains heads only.
+    """
+
+    def __init__(self, max_steps: int, layers: int):
+        self.max_steps = max_steps
+        self.layers = layers
+        self.s2_end = int(round(max_steps * 0.9))
+
+    def freeze_steps(self) -> list[int]:
+        return [self.s2_end] * self.layers
+
+    def state_at(self, step: int) -> ScheduleState:
+        if step < self.s2_end:
+            return ScheduleState(1.0, 0, False, 1)
+        return ScheduleState(1.0, self.layers, True, 3)

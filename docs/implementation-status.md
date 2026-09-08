@@ -242,3 +242,40 @@ RinGo の `Search.swift`（KataGo 全パラメータ移植、graph search 含む
 ## 次に実装すべきチケット
 
 本ラン完了後: `runs/small-9/checkpoint-best-hard.pt` を export → `Scripts/check_model_parity.py` → M1 ゲート（holdout の uniform CE 5% 減・MAE < 0.5 定数）→ 学習済み 9 路 20 局完走と uniform baseline 100 局（T31 の対局 runner が必要）。並行して T28（時計）、T22（Metal）、T26（DDP）。
+
+### 2026-09-09 00:30 巡回
+
+- 20k step 実験行列（96k 局面、GPU 1 枚ずつ）が完了: small v2 系は hard top1 0.30〜0.33（gateLR 0.03 が最良 0.331、policy CE 2.53）、expected MAE 0.323〜0.326（定数 0.5 基準 0.347、Brier 0.1375 vs 0.147）。value はわずかに動くが弱い。base（512×12）と wide（512×8）は同 step で小さいモデルより悪く、学習が遅い。
+- 学習ループの CNN baseline（top1 0.21、MAE 0.330）は、optimizer が `heads` 以外の畳み込み重みを含めていなかった不具合で無効。`optim.py` を全パラメータ対象に修正（logic モデルには影響なし、26 テスト通過）。
+- phase 2 として 100k step のラン 7 本（gateLR 0.03 系、bank30、gateLR 0.1、head LR 0.003、配線 seed 1、修正済み CNN baseline、200k step 版）を `configs/experiments/phase2/` で起動。旧コードの small-9-v1（GPU0、1.03 秒/step）は継続中。
+
+### 2026-09-09 01:25 巡回
+
+- phase 1 完了: base（512×12）と wide（512×8）も最終 hard top1 0.307〜0.308 で small 系（0.30〜0.33）と同水準。expected MAE 0.323〜0.326 で value は全構成とも弱い。
+- **修正済み CNN baseline（100k step）: hard top1 0.528、policy CE 1.86、expected MAE 0.159、Brier 0.062、score MAE 4.17、ownership MSE 0.116。** 同じデータ・head・損失で value/score/ownership を明確に学習しており、論理ゲート網の表現力/学習性が劣ることが本番規模でも確定。
+- phase 2 の logic 系（48k/100k step、stage 1 途中）は hard 指標が 20k 完了時より悪いが、これは soft 学習中の argmax 評価で離散化前のため。最終値で判断する。gateLR 0.1 は途中でも hard top1 0.326。
+- 空いた GPU 2/8 に gateLR 0.1 系を追加（bank30、base プロファイル、各 100k）。クラッシュなし。
+
+### 2026-09-09 02:25 巡回
+
+- phase 2（100k step）完了: gateLR 0.1 が最良で hard top1 0.364、policy CE 改善、expected MAE 0.301（基準 0.347）、score MAE 6.57。gateLR 0.03 系は 0.347〜0.356、head LR 0.003 は悪化（0.330）。bank30/配線 seed の差は小さい。CNN baseline は 0.528 / 0.159 で依然大差。
+- phase 3 を起動（各 100k、gateLR 0.1 基準）: gateLR 0.3、head LR 0.003、幅 512、tauFinal 0.1、200k step、dilation 全 1。継続中: gl03 200k、gl10 bank30、base gl10。small-9-v1（旧コード）は 14.5k step。
+- 最良モデル `p2-small-gl10` を export し Mac へ取得、Swift parity を確認する。
+
+### 2026-09-09 03:25 巡回
+
+- クラッシュなし。phase 3（100k）は 48k 付近で進行中（gateLR 0.3 は途中 hard top1 0.349）、gl03 200k は 152k、gl10 200k は 48k。旧コードの small-9-v1 は 18k step を超え終盤（hard top1 0.266）。GPU 0/2 は完了して空き。
+
+### 2026-09-09 04:25 巡回
+
+- 完了: gl10-local（dilation 全 1）hard top1 0.369 / expected MAE 0.294 / score MAE 6.53（logic 系の最良）、gl10-bank30 0.370 / 0.299、gl03 200k 0.366 / 0.301、gl30 0.357 / 0.309、tau 0.1 0.360 / 0.302、head LR 0.003 0.345 / 0.308。旧コード small-9-v1（20k）0.289 / 0.330。
+- 所見: 遠距離 dilation は現状の規模では寄与せず（局所配線が最良）、step 倍増（200k）の利得は小さい。CNN baseline（0.528 / 0.159）との差は依然大きく、配線・学習率の調整では埋まらない。
+- phase 4（各 200k、gl10 + 局所配線基準）を空き GPU に起動: bank30、幅 512、16 層、gateLR 0.3、16 層×512。継続中: base gl10、wide gl10、gl10 200k。
+
+### 2026-09-09 05:25 巡回
+
+- クラッシュなし。完了: wide gl10（512×8、100k）hard top1 0.365 / MAE 0.307。phase 4 の 200k 系は 14k〜51k step で進行中（16 層×512 は 0.25 秒/step で約 13 時間かかる見込み）。base gl10 と gl10 200k は残り 1 時間以内。
+
+### 2026-09-09 06:25 巡回
+
+- クラッシュなし。完了: base gl10（512×12、100k）hard top1 0.371 / MAE 0.300 / score MAE 6.67（logic 系で top1 最良）、gl10 200k 0.364 / 0.289 / 6.46（value・score は最良）。phase 4 は 29k〜102k step で進行中。GPU 4/6/7/8/9 は空き。

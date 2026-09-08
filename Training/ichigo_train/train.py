@@ -38,12 +38,13 @@ import torch
 from torch.nn.parallel import DistributedDataParallel
 
 from . import distributed as D
+from . import gates as G
 from . import losses as L
 from .checkpoint import load_checkpoint, model_from_checkpoint, save_checkpoint, set_rng_state
 from .config import ConfigError, load_config
 from .data_loader import ShardSampler, augment_d4, load_split_arrays, to_tensors
 from .dataset import manifest_hash
-from .discretize import PrefixSchedule
+from .discretize import GumbelSchedule, PrefixSchedule
 from .metrics import CSV_FIELDS, MetricsCSV, evaluate_split, gate_statistics, write_json
 from .model_factory import build_model_from_config, model_spec_from_config
 from .optim import build_optimizer, build_scheduler, clip_gradients
@@ -110,7 +111,10 @@ class Trainer:
             self.model = model_from_checkpoint(ck).to(self.device)
         else:
             self.model = build_model_from_config(cfg).to(self.device)
-        self.schedule = PrefixSchedule(cfg["maxSteps"], self.model.spec.layers, cfg["tauFinal"])
+        if cfg["discretization"] == "gumbel-ste-90-10":
+            self.schedule = GumbelSchedule(cfg["maxSteps"], self.model.spec.layers)
+        else:
+            self.schedule = PrefixSchedule(cfg["maxSteps"], self.model.spec.layers, cfg["tauFinal"], tau_start=cfg["tauStart"])
         self.opt = build_optimizer(self.model, cfg["gateLearningRate"], cfg["headLearningRate"], cfg["headWeightDecay"])
         self.sched = build_scheduler(self.opt, cfg["maxSteps"])
         if self.world_size > 1:
@@ -123,6 +127,11 @@ class Trainer:
             self.ddp_model = DistributedDataParallel(self.model, **ddp_kwargs)
         else:
             self.ddp_model = self.model
+        self.gumbel_rng = None
+        if cfg["discretization"] == "gumbel-ste-90-10":
+            # torch.Generator has a single integer seed; encoding the pair this way keeps each
+            # rank's stream distinct while remaining stable across processes and resumes.
+            self.gumbel_rng = torch.Generator(device=self.device).manual_seed((int(cfg["seed"]) << 16) + self.rank)
         self.sampler = ShardSampler(cfg["data"], cfg["seed"], self.fixture, rank=self.rank, world_size=self.world_size)
         self.aug_rng = np.random.Generator(np.random.PCG64([cfg["seed"], 7]))
         torch.manual_seed(cfg["seed"]); np.random.seed(cfg["seed"] % (2 ** 32))
@@ -135,6 +144,8 @@ class Trainer:
             set_rng_state(ck["rng"])
             self.best_hard = tuple(ck["extra"]["bestHard"]) if ck["extra"].get("bestHard") else None
             self.warnings = ck["extra"].get("warnings", [])
+            if self.gumbel_rng is not None and ck.get("gumbelRng") is not None:
+                self.gumbel_rng.set_state(ck["gumbelRng"])
             self._log(f"resumed from {resume} at step {self.step}")
         self.val_arrays = load_split_arrays(cfg["data"], "validation", self.fixture, cfg["maxValidationPositions"])
         if self.is_main:
@@ -158,8 +169,12 @@ class Trainer:
         if self.cfg.get("modelType", "logic") == "cnn-baseline":
             return  # no fixed wiring to check for the diagnostic CNN baseline (T33)
         spec = model_spec_from_config(self.cfg)
-        from .wiring import generate_wiring
-        if not np.array_equal(ck["wiring"], generate_wiring(spec).wiring):
+        from .wiring import generate_wiring, generate_wiring_candidates
+        if self.cfg.get("wiringMode", "fixed") == "learned-k":
+            expected = generate_wiring_candidates(spec, self.cfg.get("wiringCandidates", 8)).candidates
+            if not np.array_equal(ck.get("wiringCandidates"), expected):
+                raise ConfigError("checkpoint wiring candidates do not match the configured profile/seed")
+        elif not np.array_equal(ck["wiring"], generate_wiring(spec).wiring):
             raise ConfigError("checkpoint wiring does not match the configured profile/seed")
 
     def _log(self, msg: str):
@@ -178,6 +193,14 @@ class Trainer:
         self.opt.zero_grad(set_to_none=True)
         frozen_theta = model.theta.detach()[: st.frozen_prefix].clone() if st.frozen_prefix else None
         all_theta = model.theta.detach().clone() if st.heads_only else None
+        frozen_phi = model.phi.detach()[: st.frozen_prefix].clone() if getattr(model, "wiring_mode", "fixed") == "learned-k" and st.frozen_prefix else None
+        all_phi = model.phi.detach().clone() if getattr(model, "wiring_mode", "fixed") == "learned-k" and st.heads_only else None
+
+        gumbel_noise = None
+        if self.gumbel_rng is not None and not st.heads_only:
+            u = torch.rand(model.theta.shape, device=self.device, generator=self.gumbel_rng, dtype=model.theta.dtype)
+            gumbel_noise = -torch.log(-torch.log(u.clamp_(1e-6, 1.0 - 1e-6)))
+        tau_wire = cfg["wiringTau"] * st.tau / cfg["tauStart"]
 
         # Draw every microbatch of this optimizer step up front so the per-term valid-weight
         # denominator can be computed over the whole (this-rank) accumulation window, then
@@ -201,9 +224,13 @@ class Trainer:
 
         totals = {k: 0.0 for k in ["total", "policy", "expected_result", "wdl", "score", "ownership"]}
         for t in batches:
-            out = fmodel(t["spatial"], t["global"], tau=st.tau, frozen_prefix=st.frozen_prefix)
+            out = fmodel(t["spatial"], t["global"], tau=st.tau, frozen_prefix=st.frozen_prefix,
+                         gumbel_noise=gumbel_noise, tau_wire=tau_wire)
             r = L.compute_losses(out, t, self.S, weight_denominators=global_sums, numerator_scale=float(self.world_size))
-            loss = r["total"]
+            # Rebuild this small graph for every microbatch; the same regularizer is divided by
+            # accumulation so the optimizer-step contribution is exactly one weighted entropy.
+            gate_entropy = G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"])
+            loss = r["total"] + gate_entropy / self.accum
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite loss at step {self.step}")
             loss.backward()
@@ -216,11 +243,18 @@ class Trainer:
         tvec = torch.tensor([totals[k] for k in totals], dtype=torch.float64, device=self.device)
         D.all_reduce_sum(tvec)
         totals = {k: v / self.world_size for k, v in zip(totals, tvec.tolist())}
+        entropy_value = float(G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"]).detach().item())
+        totals["gateEntropyLoss"] = entropy_value
+        totals["total"] += entropy_value
 
         if st.heads_only:
             model.theta.grad = None
+            if getattr(model, "wiring_mode", "fixed") == "learned-k":
+                model.phi.grad = None
         elif st.frozen_prefix and model.theta.grad is not None:
             model.theta.grad[: st.frozen_prefix].zero_()
+            if getattr(model, "wiring_mode", "fixed") == "learned-k" and model.phi.grad is not None:
+                model.phi.grad[: st.frozen_prefix].zero_()
         gnorm = clip_gradients(model, cfg["gradClipNorm"])
         if not np.isfinite(gnorm):
             raise FloatingPointError(f"non-finite gradient norm at step {self.step}")
@@ -232,9 +266,14 @@ class Trainer:
                 model.theta.copy_(all_theta)
             elif frozen_theta is not None:
                 model.theta[: st.frozen_prefix].copy_(frozen_theta)
+            if all_phi is not None:
+                model.phi.copy_(all_phi)
+            elif frozen_phi is not None:
+                model.phi[: st.frozen_prefix].copy_(frozen_phi)
         self.step += 1
         lrs = [g["lr"] for g in self.opt.param_groups]
-        return dict(totals, gradNorm=gnorm, tau=st.tau, frozenPrefix=st.frozen_prefix, headsOnly=st.heads_only, lrGates=lrs[0], lrHeads=lrs[1], layerGradNorm=layer_grad)
+        return dict(totals, gradNorm=gnorm, tau=st.tau, tauWire=tau_wire, frozenPrefix=st.frozen_prefix,
+                    headsOnly=st.heads_only, lrGates=lrs[0], lrHeads=lrs[1], layerGradNorm=layer_grad)
 
     # ---- validation ----
     def validate(self, tag: str = "") -> dict:
@@ -251,12 +290,13 @@ class Trainer:
             stats = gate_statistics(self.model, sample)
             rec = {"step": self.step, "tau": st.tau, "frozenPrefix": st.frozen_prefix, "headsOnly": st.heads_only, "stage": st.stage,
                    "soft": soft, "hard": hard, "softHardPolicyCEDiff": hard["policy"] - soft["policy"], "gates": stats, "tag": tag,
+                   "gateEntropyLoss": float(G.gate_entropy_loss(self.model.theta, st.tau, self.cfg["gateEntropyWeight"]).item()),
                    "elapsedSeconds": time.monotonic() - self.t_start}
             write_json(os.path.join(self.out, "validation", f"step-{self.step:07d}{('-' + tag) if tag else ''}.json"), rec)
             for mode, r in (("soft", soft), ("hard", hard)):
                 self.csv.write({"step": self.step, "phase": "validation", "mode": mode, "tau": st.tau, "frozenPrefix": st.frozen_prefix, "headsOnly": st.heads_only,
                                 **{k: r[k] for k in ["total", "policy", "expected_result", "wdl", "score", "ownership", "policyTop1", "expectedMAE", "expectedBrier", "scoreMAEPoints", "ownershipMSE"]},
-                                "softHardPolicyCEDiff": rec["softHardPolicyCEDiff"], "elapsedSeconds": rec["elapsedSeconds"]})
+                                "softHardPolicyCEDiff": rec["softHardPolicyCEDiff"], "gateEntropyLoss": rec["gateEntropyLoss"], "elapsedSeconds": rec["elapsedSeconds"]})
             self._log(f"validation soft total={soft['total']:.4f} top1={soft['policyTop1']:.3f} mae={soft['expectedMAE']:.3f} | hard total={hard['total']:.4f} top1={hard['policyTop1']:.3f} mae={hard['expectedMAE']:.3f} frozen={st.frozen_prefix}")
             # best-hard selection: minimal hard total, ties -> earliest step
             if self.best_hard is None or hard["total"] < self.best_hard[0]:
@@ -272,7 +312,8 @@ class Trainer:
             return
         st = self.schedule.state_at(self.step)
         save_checkpoint(os.path.join(self.out, name), self.model, self.opt, self.sched, self.step, st.frozen_prefix, self.sampler.state(),
-                        self.aug_rng, self.cfg, self.dataset_hash, FEATURE_VERSION, {"bestHard": self.best_hard, "warnings": self.warnings})
+                        self.aug_rng, self.cfg, self.dataset_hash, FEATURE_VERSION,
+                        {"bestHard": self.best_hard, "warnings": self.warnings}, gumbel_rng=self.gumbel_rng)
 
     def run(self) -> int:
         cfg = self.cfg

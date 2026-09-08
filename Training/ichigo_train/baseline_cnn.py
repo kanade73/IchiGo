@@ -107,7 +107,8 @@ class BaselineCNN(nn.Module):
         h = self.blocks(F.relu(self.stem(x)))
         return h.permute(0, 2, 3, 1)                               # NCHW -> NHWC, [B,S,S,C]
 
-    def forward(self, spatial: torch.Tensor, glob: torch.Tensor, tau: float = 1.0, frozen_prefix: int = 0) -> dict[str, torch.Tensor]:
+    def forward(self, spatial: torch.Tensor, glob: torch.Tensor, tau: float = 1.0, frozen_prefix: int = 0,
+                gumbel_noise: torch.Tensor | None = None, tau_wire: float | None = None) -> dict[str, torch.Tensor]:
         # tau/frozen_prefix are LogicNet-only concepts (gate-softmax temperature, discretisation
         # prefix); accepted here only so train.py can call both models identically, and ignored.
         LogicNet._check_inputs(spatial, glob)

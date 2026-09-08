@@ -67,6 +67,21 @@ def reduce_theta(theta: torch.Tensor, tau: float) -> torch.Tensor:
     return p @ table
 
 
+def gate_entropy(theta: torch.Tensor, tau: float) -> torch.Tensor:
+    """Mean entropy of ``softmax(theta / tau)`` over all layer/channel gates."""
+    if theta.numel() == 0:
+        return theta.sum() * 0.0
+    p = gate_probabilities(theta, tau)
+    return -(p * torch.log(p.clamp_min(1e-12))).sum(-1).mean()
+
+
+def gate_entropy_loss(theta: torch.Tensor, tau: float, weight: float) -> torch.Tensor:
+    """Weighted gate entropy regularizer; returns an attached zero when ``weight == 0``."""
+    if weight == 0:
+        return theta.sum() * 0.0
+    return torch.as_tensor(weight, dtype=theta.dtype, device=theta.device) * gate_entropy(theta, tau)
+
+
 def soft_gate_reduced(t: torch.Tensor, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """``sum_i t_i * q_i`` with ``t`` of shape ``[..., 4]`` broadcast against ``a``/``b``."""
     one = torch.ones((), dtype=a.dtype, device=a.device)

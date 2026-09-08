@@ -8,9 +8,13 @@ import LogicModel
 /// per-size evaluators and the search. `handle(line:)` returns the full GTP response text
 /// (including the trailing blank line); all diagnostics go to `log` (stderr), never stdout.
 ///
-/// v1 limits: fixed visits per move (time_settings accepts sudden death only, byo-yomi is rejected;
-/// budget-based clock control is T28), resign off, kata-genmove_analyze reports the root summary
-/// with the best candidate's PV (child scores are root summaries — docs/spec/03-engine.md §9).
+/// v1 limits: resign off, kata-genmove_analyze reports the root summary with the best candidate's
+/// PV (child scores are root summaries — docs/spec/03-engine.md §9). Clock control (docs/spec/
+/// 03-engine.md §8): `time_settings` accepts sudden death only (byo-yomi is rejected outright);
+/// with no `time_settings` at all, genmove keeps the fixed `Config.visits` cap and no deadline.
+/// Once `time_settings` has been given, every genmove computes a per-move budget from the clock
+/// (`TimeManager.budget`) and runs the search under a `DeadlineController` watchdog, so a slow or
+/// hung evaluator still returns a legal move by the deadline (docs/spec/03-engine.md §8).
 public actor GTPEngine {
     public struct Config: Sendable {
         public var visits: Int = 100
@@ -36,6 +40,7 @@ public actor GTPEngine {
     private let models: [Int: ModelSlot]
     private var config: Config
     private let log: @Sendable (String) -> Void
+    private let clock: any MonotonicClock
     private var boardSize: Int
     private var komi: Float
     private var game: GameState
@@ -44,10 +49,11 @@ public actor GTPEngine {
     private var mainTime: Double?
     public private(set) var quitRequested = false
 
-    public init(models: [Int: ModelSlot], config: Config = Config(), log: @escaping @Sendable (String) -> Void) throws {
+    public init(models: [Int: ModelSlot], config: Config = Config(), clock: any MonotonicClock = SystemMonotonicClock(), log: @escaping @Sendable (String) -> Void) throws {
         guard !models.isEmpty else { throw SearchError(message: "at least one model is required") }
         self.models = models
         self.config = config
+        self.clock = clock
         self.log = log
         let size = models[config.defaultBoardSize] != nil ? config.defaultBoardSize : models.keys.sorted()[0]
         boardSize = size
@@ -148,7 +154,7 @@ public actor GTPEngine {
             return o.whiteMinusBlack > 0 ? "W+\(fmt(o.whiteMinusBlack))" : "B+\(fmt(-o.whiteMinusBlack))"
         case "time_settings":
             guard p.args.count >= 3, let main = Double(p.args[0]), let byo = Double(p.args[1]), let stones = Int(p.args[2]) else { throw GTPError(message: "syntax error") }
-            guard byo == 0, stones == 0 else { throw GTPError(message: "byo-yomi is not supported in v1 (sudden death only)") }
+            do { try TimeManager.validateSuddenDeath(byo: byo, stones: stones) } catch { throw GTPError(message: "\(error)") }
             mainTime = main; timeLeft = [.black: main, .white: main]; return ""
         case "time_left":
             guard p.args.count >= 3, let c = Self.color(p.args[0]), let t = Double(p.args[1]) else { throw GTPError(message: "syntax error") }
@@ -159,6 +165,11 @@ public actor GTPEngine {
     }
 
     /// Shared by genmove and kata-genmove_analyze: search → legality re-check → commit → respond.
+    /// When `time_settings` was given, this computes a per-move deadline from the clock
+    /// (docs/spec/03-engine.md §8) and runs the search under `DeadlineController`, which guarantees
+    /// exactly one move is committed to the search tree even if the deadline races the search's own
+    /// completion. With no `time_settings`, the search runs to the fixed `config.visits` with no
+    /// deadline (unchanged v1 default behaviour).
     private func generateMove(for player: Player) async throws -> (MoveCoord, SearchResult?) {
         guard let slot = models[boardSize] else { throw GTPError(message: "no model for size \(boardSize)") }
         guard player == game.toMove else { throw GTPError(message: "it is \(game.toMove == .black ? "black" : "white")'s turn") }
@@ -167,15 +178,44 @@ public actor GTPEngine {
             return (.pass, nil)
         }
         if search == nil {
-            search = try Search(evaluator: slot.evaluator, modelHash: slot.modelHash, settings: config.searchSettings, initial: game.record)
+            search = try Search(evaluator: slot.evaluator, modelHash: slot.modelHash, settings: config.searchSettings, initial: game.record, clock: clock)
         }
         let s = search!
-        let result = try await s.run(visits: config.visits)
-        guard game.isLegal(player, result.move) else { throw GTPError(message: "search produced an illegal move \(result.move)") }
-        try game.play(player, result.move)
-        try await s.makeMove(result.move)
-        log("genmove \(Coordinates.gtpString(result.move, size: boardSize)) visits=\(result.rootVisits) expected(draw=0.5)=\(String(format: "%.3f", result.searchExpected)) rawNN=\(String(format: "%.3f", result.rootRawExpected)) model=\(result.modelHash.prefix(12))")
-        return (result.move, result)
+
+        let start = await clock.now()
+        var deadline: Double?
+        var remaining: Double?
+        var budget: Double?
+        var visitsTarget = config.visits
+        if mainTime != nil {
+            // Server `time_left` values take precedence over local accounting (docs/spec/03-engine
+            // .md §8); `timeLeft[player]` already holds the latest one `time_left` reported, or the
+            // `time_settings` main time if none has arrived yet for this colour.
+            let r = timeLeft[player] ?? 0
+            remaining = r
+            let b = TimeManager.budget(remaining: r, moveNumber: game.moveNumber, boardSize: boardSize)
+            budget = b
+            deadline = start + b
+            // The deadline is now the binding stop condition; let the search run as far as the
+            // node budget allows instead of an unrelated small fixed-visits cap.
+            visitsTarget = config.searchSettings.maxNodes
+        }
+
+        let outcome = try await DeadlineController.run(search: s, visits: visitsTarget, deadline: deadline, clock: clock)
+        guard game.isLegal(player, outcome.move) else { throw GTPError(message: "search produced an illegal move \(outcome.move)") }
+        try game.play(player, outcome.move)
+
+        if let remaining {
+            let elapsed = await clock.now() - start
+            timeLeft[player] = max(0, remaining - elapsed)
+            log("genmove clock: remaining=\(String(format: "%.3f", remaining)) budget=\(String(format: "%.3f", budget ?? 0)) actual=\(String(format: "%.3f", elapsed)) timedOut=\(outcome.timedOut)")
+        }
+        if let result = outcome.result {
+            log("genmove \(Coordinates.gtpString(outcome.move, size: boardSize)) visits=\(result.rootVisits) expected(draw=0.5)=\(String(format: "%.3f", result.searchExpected)) rawNN=\(String(format: "%.3f", result.rootRawExpected)) model=\(result.modelHash.prefix(12))")
+        } else {
+            log("genmove \(Coordinates.gtpString(outcome.move, size: boardSize)) fallback (deadline watchdog fired) model=\(slot.modelHash.prefix(12))")
+        }
+        return (outcome.move, outcome.result)
     }
 
     static func analysisPayload(_ r: SearchResult?, move: MoveCoord, size: Int) -> String {

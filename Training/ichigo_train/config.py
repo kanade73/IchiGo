@@ -23,7 +23,12 @@ DEFAULTS = {
     "augmentation": "d4",
     "precision": "fp32",
     # IchiGo-specific optional keys (documented in docs/implementation-status.md)
+    "tauStart": 1.0,
     "tauFinal": 0.2,
+    "gateEntropyWeight": 0.0,
+    "wiringMode": "fixed",
+    "wiringCandidates": 8,
+    "wiringTau": 1.0,
     "maxValidationPositions": None,   # None = whole holdout
     "fixtureMode": False,             # True: data dir holds fixture.npz; train == validation, no split
     "freezeWarningThreshold": 0.2,
@@ -63,8 +68,8 @@ def load_config(path: str) -> tuple[dict, dict]:
         raise ConfigError("device must be cpu or cuda")
     if cfg["precision"] != "fp32":
         raise ConfigError("precision must be fp32 (v1)")
-    if cfg["discretization"] not in ("prefix-60-30-10",):
-        raise ConfigError("discretization must be prefix-60-30-10 (gumbel-ste-90-10 is not implemented)")
+    if cfg["discretization"] not in ("prefix-60-30-10", "gumbel-ste-90-10"):
+        raise ConfigError("discretization must be prefix-60-30-10 or gumbel-ste-90-10")
     if cfg["augmentation"] not in ("d4", "none"):
         raise ConfigError("augmentation must be d4 or none")
     if cfg["boardSize"] not in (9, 19):
@@ -74,6 +79,15 @@ def load_config(path: str) -> tuple[dict, dict]:
             raise ConfigError(f"{k} must be a positive integer")
     if cfg["effectiveBatch"] % cfg["microBatch"] != 0:
         raise ConfigError("effectiveBatch must be divisible by microBatch")
+    for k in ("tauStart", "tauFinal", "wiringTau"):
+        if not isinstance(cfg[k], (int, float)) or isinstance(cfg[k], bool) or cfg[k] <= 0:
+            raise ConfigError(f"{k} must be a positive number")
+    if not isinstance(cfg["gateEntropyWeight"], (int, float)) or isinstance(cfg["gateEntropyWeight"], bool) or cfg["gateEntropyWeight"] < 0:
+        raise ConfigError("gateEntropyWeight must be a non-negative number")
+    if cfg["wiringMode"] not in ("fixed", "learned-k"):
+        raise ConfigError("wiringMode must be fixed or learned-k")
+    if not isinstance(cfg["wiringCandidates"], int) or isinstance(cfg["wiringCandidates"], bool) or cfg["wiringCandidates"] <= 0:
+        raise ConfigError("wiringCandidates must be a positive integer")
     cfg["data"] = os.path.abspath(cfg["data"])
     cfg["out"] = os.path.abspath(cfg["out"])
     if cfg["throughputReference"] is not None:
