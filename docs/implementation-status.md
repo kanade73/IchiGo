@@ -318,3 +318,11 @@ RinGo の `Search.swift`（KataGo 全パラメータ移植、graph search 含む
 カバー内容: `R=0/0.05/1/300`秒のbudget手計算一致、reserve/estimatedMoves/stopMarginの境界値、`time_settings`のsudden-death以外拒否、fallback 3段の直接検証、実clockでdeadline手前にnew batchを止める（visits target未達で終了）、DeadlineControllerの通常完了commit、budget=0でも即legal move、slow evaluator（fake clockでdelay=1000 vs deadline=1）でfallbackが即返り commit exactly once、**exact-tie race（evaluatorがdeadlineと同時刻に解決するよう`FakeClock`で強制、25回ループ）で常にgeneration=1（commit 1回）**、`makeMove`によるinvalidation後に遅延結果が届いても木のgeneration/visits/moves countが不変（generation-id dropの直接テスト）。GTP層: `time_left=0`で即legal move、`time_settings`下でSlowEvaluator（実3秒delay）でもgenmoveが2秒以内に戻りstderrログに`timedOut=true`が出る。
 
 CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）は範囲外のまま：watchdogが遅延taskを`cancel()`するのはbest-effort（`Task.sleep`ベースのfake evaluatorはcancellationに応答するが、将来の非協調的backendはこれに依存しない設計）。
+
+### 2026-09-09 昼: M1 棋力ゲート、T28/T30/T31
+
+- **M1 baseline 対局: PASS。** `models/p2-small-gl10.ichigo`（100 visits）vs 合法手 uniform baseline、9 路 komi 7、100 局（50 色交換ペア）: 100 勝 0 敗、paired bootstrap 95% CI [1.0, 1.0]、違法手/クラッシュ/タイムアウト/打切り 0（`reports/matches/p2-small-gl10/`）。極端に弱い相手なので大会棋力の主張ではない（05 §6）。
+- T28（時計・watchdog）: sudden death 予算式、deadline 付き探索、CommitGate による「着手 commit は必ず 1 回」、generation ID で遅延結果を破棄。TimeTests 12 件 + GTP 2 件。
+- T30（CGOS ローカル統合）: 公開 cgos 実装（revision 4dcff875…）の文法を再実装した client、fake server、切断→setup replay、SIGTERM 対局間停止、log rotation。実エンジン 2 台で 2 局完走を含む 37 テスト。実サーバー未接続。
+- T31（対局 runner）: `python -m ichigo_train match`、uniform baseline、paired bootstrap、`Scripts/run_baseline_match.sh`。
+- commits: T28 5eab2d9、T31 ee924df、T30 54e84d2。
