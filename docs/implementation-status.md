@@ -1,0 +1,244 @@
+# IchiGo 実装状況
+
+更新: 2026-09-08（M0 完了後、M1 の T11〜T17 を追記）。仕様は `docs/spec/`。本書は「実装したもの」「実際に実行した検証」「未解決事項」を分けて記録する。
+ランダム初期化モデルの完走は学習成功や棋力を意味しない（M0 は棋力主張なし）。
+
+## 環境
+
+- Mac: Apple M5、10 cores、32GB、macOS 26.3.1(a)、Swift 6.2.3（`swift-tools-version 6.0`、deployment target macOS 14）。
+- Python: uv 0.10.2、Python 3.12.13、torch 2.14.0（CPU）、numpy 2.5.3、pytest 9.1.1。`Training/uv.lock` に固定。
+- CUDA / A4000: 本セッションでは利用不可。CUDA 関連は未検証。
+- Metal: デバイス検出のみ（`ichigo doctor`）。Metal カーネルは T22 以降。
+
+## 完了チケット（M0）
+
+| チケット | 内容 | 主な成果物 |
+|---|---|---|
+| T01 | 骨格 | `Package.swift`（Core/Features/LogicModel/LogicMetal/Engine/GTP/ichigo）、`Training/pyproject.toml` + `uv.lock`、`Makefile`、`.gitignore` |
+| T02 | RinGoCore 移植 | `Sources/IchiGoCore/*`（13 ファイル、無改変コピー）、`Tests/IchiGoCoreTests/*`（import 名のみ置換）、`docs/provenance/ringo-import.json`（39 ファイルの sha256、HEAD `9d07c47c…`、dirty=true） |
+| T03 | 座標・snapshot | `IchiGoFeatures/Coordinates.swift`、`PositionSnapshot.swift`（`GameState` + 値型 `PositionSnapshot`、7 手分の配置を自前保持） |
+| T04 | 32ch + global | `FeatureEncoder.swift` |
+| T05 | D4 と合法手 mask | `FeatureSymmetry.swift`、`ichigo_train/symmetry.py`、共有 fixture `Tests/Fixtures/symmetry/perm-{9,19}.json` |
+| T06 | Python ゲート oracle | `ichigo_train/gates.py`、`tests/test_gates.py` |
+| T07 | 配線・モデル生成 | `wiring.py`、`model.py`、`configs/model-{tiny,small,base}.json` |
+| T08 | Swift 離散ゲートと head | `LogicModel/ScalarBackend.swift`、`Heads.swift`、`Postprocess.swift` |
+| T09 | exporter | `model_format.py`、`export.py`、CLI `init-model` / `export` / `inspect` |
+| T10 | Swift loader + CLI | `ModelManifest.swift`、`ModelLoader.swift`、`SHA256.swift`、`ichigo doctor/inspect/eval`、`Scripts/check_eval_parity.py` |
+
+## 実行した検証と結果
+
+すべて 2026-09-08 にこの Mac 上で実行。
+
+| コマンド | 結果 |
+|---|---|
+| `swift test --filter IchiGoCoreTests` | 67 tests、0 failures（RinGo 由来の Board/Area/Ladder/Rules/NNInputs golden 全通過） |
+| `make check-cpu` | Swift 107 tests + pytest 38（M0 時点）。M1 追記時点: Swift 117 tests、0 failures + pytest 67 passed |
+| `make parity-cpu` | fixture 再生成 → Swift `ParityTests`（tiny-9 B=4、tiny-19 B=2）全論理層 bit 完全一致、head は `1e-4+1e-4*|ref|` 以内、後処理 1e-5 以内 → `ichigo eval` 経由の全サンプル比較 PASS（9 路 4 sample、19 路 2 sample）。exit 0 |
+| `ichigo doctor` | arm64、10 cores、Metal "Apple M5" 検出、JSON 出力 |
+| 参照リポジトリ | `git status --porcelain` 74 行（セッション開始前からの未コミット変更）、セッション開始以降に更新されたファイルなし。HEAD 不変 |
+
+検収条件の対応:
+
+- T03: A9→index0、J1→80、A19→0、T1→360、I 列拒否、snapshot 後の盤変更が snapshot に影響しない（`CoordinateTests`、`FeatureTests.testSnapshotIsIndependentOfLaterMoves`）。
+- T04: 9 路空盤、19 路空盤（白番）、取石（pass 含む 7 手履歴）、単純コウ（ch18 と ch17、呼吸点 1/2/3+）、19 路自殺点、2 pass、履歴不足、positional superko（RinGo の二子送り一子返し参照局面を 9 路右端へ埋め込み、単純コウ点なしで ch17=0）を手計算 fixture で全 32ch × 全点を検証。
+- T05: 8 変換の逆写像で完全一致、pass 不変、Python/Swift が同一 JSON permutation を再現。
+- T06: 16×4 真理値、a/b 入替、直接 16 和と `[C,4]` 縮約の forward/gradient 一致、float64 gradcheck、argmax tie 最小 ID。
+- T07: seed 再現、盤外 0、9/19 両 forward（tiny/small）、head shape、bank/offset/A=B の拒否。
+- T08/T10: 上記 parity。truncation、sha 不一致、version/featureVersion/rulesId 不一致、NaN manifest、gate>15、offset 範囲外、tensor 欠落/重複/重なり/未整列、`..` パス、symlink、channels 範囲外をすべて拒否（`LoaderRejectionTests` 14 件、Python 側 `test_model_format.py` 同等 11 件 + 4 件）。
+- T09: 書いて再 load した hard 出力一致、`--overwrite` なしで拒否、失敗 export の一時ディレクトリ残存なし。
+
+## 設計上の判断（仕様が明示していない点）
+
+- 配線生成の乱数消費順序を `wiring.py` の docstring に固定した（層→channel の順に A（固定でなければ）→B、その後 theta）。保存された `wiring.i32` が正本であり、Swift は再生成しない。
+- head 初期化の乱数は `PCG64(seed+1)`（配線 seed と独立）。
+- `BoardHistory.numRecentBoards` は 6 で、7 手分の履歴に足りないため `GameState` が全手の配置を自前で保持する。
+- `PositionSnapshot` の fingerprint は posHash・手番・単純コウ点・superko 禁止点集合・連続 pass 数・komi・手数の文字列。探索の重複排除（T20）でそのまま使えるが、cache key（03-4）は別途定義が必要。
+- LogicModel は Foundation のみ依存とするため SHA-256 を自前実装（既知ベクトルで検証）。
+- `.ichigo` の `trainingProvenance` は Swift 側では文字列 JSON として保持（Sendable のため）。
+- `ichigo inspect/eval` はモデル不正を exit 2、推論失敗を exit 3 で返す。`eval` の position JSON は 02-2 の `boardSize/spatial/global/legal` のみ必須。
+
+## 未解決・未検証
+
+- `make check-metal` / `parity-metal` / `check-cuda` / `integration` / `release-check` は未実装で明示的に失敗する（T22+/T17/T26/T12+/T37）。
+- CUDA/A4000、DDP、学習ループ（T14〜T17）は未着手・未検証。
+- `IchiGoEngine` は `ModelCapabilities` のみ、`IchiGoGTP` は名前定数のみ（T18〜T21 で実装）。両テストターゲットはビルド確認用の smoke のみ。
+- macOS 14 実機互換は未検証（deployment target のみ）。
+- 教師 KataGo、RinGo 既存 `.nngd` コーパスの在庫調査は未実施（T12/T13）。
+- Python `LogicNet` は soft/hard forward と prefix 凍結までを持つが、損失・optimizer・スケジュールは未実装。
+
+---
+
+## M1 前半（T11〜T17）: 2026-09-08 追記
+
+### RinGo 既存データの在庫調査（02-11）
+
+| 対象 | 結果 |
+|---|---|
+| `.nngd` v2 shard | 参照リポジトリの `.tools/` 配下に smoke 用 shard 5 本のみ（cq-smoke / wp2a / wp2b / deep50-val）。局面索引・gameId・対応棋譜の記録なし。`.tools/` は仕様でコピー禁止 |
+| 棋譜 | `katago-mlx/kifu/` に 49,893 局。すべて 9 路、RU[Chinese]、KM[7]、置石なし。投了 35,703 局、点数決着 14,190 局、平均 48.1 手、総手数 2.40M |
+| 生成設定・sample 対応 | 存在しない。`ringo makedata` の列挙順・skip・symmetry を再現して照合する根拠資料がなく、11.2 の「全 sample 一致の証明」ができない |
+
+判断: 経路 1（既存 target の再利用）は対応を証明できないため採用せず、経路 2（既存棋譜を固定教師で一度だけラベル化）を採用。再利用できた既存ラベルは 0 件。importer（`import-ringo`）と v2 reader は契約どおり実装し、合成 v2 shard で検証した（mapping ファイルが与えられた場合のみ動作し、推測しない）。
+
+### 教師
+
+- KataGo 1.18.2（Homebrew、Metal backend）。ネットは Homebrew 同梱の公開モデル `g170e-b20c256x2-s5303129600-d1228401921.bin.gz`（sha256 `7c8a84ed9ee737e9c7e741a08bf242d63db37b648e7f64942f3a8b1b5101e7c2`）。`kata1-b18c384nbt-s9996604416`（sha256 `9d7a6afe…`）も計測したが 2.2 局面/秒で、b20c256 の 3.0〜3.4 局面/秒を採用。run 途中で切り替えていない。
+- 設定 `configs/teacher-katago-analysis.cfg`（`reportAnalysisWinratesAs = SIDETOMOVE`、8 analysis threads × 4 search threads）、128 visits、rules は明示 JSON（POSITIONAL / AREA / NONE / suicide=false / friendlyPassOk）。
+- 視点の検証: 黒石 9 個・白番の probe 局面で winrate 0.0009、scoreLead −57.9、中央 ownership −0.98 を確認し、`Tests/Fixtures/teacher/`（実教師 20 局面 + probe の生応答）を fixture 化。
+- adapter のタイムアウトは「応答ごとにリセットする idle 60 秒（初回は queue 深さ倍）」とした。1 クエリ = 1 局（最大 4S² turn）で、固定 60 秒/クエリでは queue 待ちで必ず超過して再送が連鎖したため（実際に停止を観測）。
+
+### 完了チケット
+
+| チケット | 成果物 | 検証 |
+|---|---|---|
+| T11 | `IchiGoFeatures/SGFReader.swift`（RinGo から移植、provenance 追記）、`PositionExport.swift`（replay、canonical positionId/gameId）、`ichigo features` | `SGFReplayTests` 5 件（Python と同一 hash、取石/pass、サイズ不一致/占有点/自殺/コウ/変化/重複配置の拒否、置石順序）。実コーパス 2,200 局 → 2,199 局 108,676 局面、1 局拒否（superko 違反、手数付き） |
+| T12 | `ichigo_train/teacher.py`、`tests/fake_teacher.py`、`test_teacher.py`、`test_teacher_fixture.py` | 順不同・重複・欠落 turn の再送/拒否・timeout・視点変換（black/sidetomove）・違法手 visits・error 応答・NaN/長さ不一致を fake teacher で 9 件、実教師 fixture 2 件 |
+| T13 | `dataset.py`（shard v1、D4 最小 gameId の splitKey、重複排除、sha 検証）、`ringo_import.py`（v2 reader/inventory/importer）、CLI `label` / `build-data` / `inventory-ringo` / `import-ringo`、`Scripts/generate_teacher_games.py`（未実行） | `test_dataset.py` 5 件（対称不変 splitKey、split 跨ぎなし、重複排除、shard 検証、holdout 空エラー、mask/wdl、v2 読み書き・v1/切詰め拒否・symmetry 逆変換・noResult 除外） |
+| T14 | `losses.py`、`optim.py` | `test_losses.py` 5 件（手計算一致、全 mask 0 で NaN なし、違法手 logit、1 step 更新、schedule 形状） |
+| T15 | `config.py`、`data_loader.py`、`checkpoint.py`、`metrics.py`、`train.py`、CLI `train` / `evaluate` | `test_train.py` 5 件（10 step と 5+resume 5 が bit 一致、dataset/wiring 不一致 resume 拒否、成果物一式、config 未知キー） |
+| T16 | `discretize.py`、train.py の prefix 凍結・heads-only・best-hard 選抜・凍結前後 hard 検証と 20% 警告 | `test_discretize.py` 2 件、`test_train.py` の凍結テスト（凍結層 theta 不変、未凍結層は更新、最終 export が全層 argmax） |
+| T17 | `configs/train-tiny.json`、`Scripts/make_overfit_fixture.py`、`Scripts/check_overfit_gate.py`、`Scripts/check_model_parity.py`、`Scripts/train_pilot.sh`、`configs/train-9*.json`、`reports/pilot/` | 下記 |
+
+### T17 結果（この Mac、CPU）
+
+16 局面過学習（tiny、effective batch 16、2000 step、augmentation なし、`runs/overfit-tiny-9*`）:
+
+| seed | soft 達成 step（top1≥0.9 かつ MAE≤0.1） | 最終 hard top1 | 最終 hard MAE | 判定 |
+|---|---|---|---|---|
+| 20260908 | 500（top1 1.000、MAE 0.064） | 0.8125 | 0.063 | PASS |
+| 1 | 1000 | 0.8125 | 0.093 | PASS |
+| 2 | 500 | 0.9375 | 0.043 | PASS |
+
+`reports/pilot/overfit-gate.json`。注意: 全 seed で hard は 13/16〜15/16 とぎりぎりであり、stage 1（tau=1）の間は soft top1 1.0 に対し hard top1 0.1〜0.4 と soft-hard 差が大きい。凍結と heads 再学習（stage 3）で hard が回復する。02-11.3 の Gumbel-STE 対照実験は未実施（`gumbel-ste-90-10` は config で拒否）。
+
+small pilot（CPU、A4000 は利用不可）:
+
+| run | データ | step | 秒/step | 合計 | 結果 |
+|---|---|---|---|---|---|
+| `small-9-pilot100-cpu` | dataset-9-a（1,599 局面） | 100 | 0.324 | 34 s | 速度計測のみ |
+| `small-9-pilot2000-cpu` | dataset-9-b（train 6,706 / val 359 / test 447） | 2000 | 0.282 | 577 s（validation 12.7 s） | 下表 |
+
+pilot2000 の hard（全層 argmax、best-hard = step 2000）:
+
+| 指標 | validation | test | baseline（validation / test） |
+|---|---|---|---|
+| policy CE | 3.012 | 2.937 | uniform 合法 3.943 / 3.993（`reports/pilot/baseline-*.json`） |
+| policy top1 | 0.173 | 0.204 | — |
+| expected MAE | 0.320 | 0.374 | 定数 0.5: 0.328 / 0.377 |
+| score MAE（目） | 5.47 | — | 定数 0: 5.47 |
+
+判定: policy は uniform に対して CE 23.6% 減で 05-4 の 5% 基準を満たす。expected result は validation 0.320 vs 0.328、test 0.374 vs 0.377 と baseline をわずかに下回るだけで、value head は実質未学習に近い。score/ownership も baseline 同等。これは「学習が動く」ことの確認であり、M1 の学習成立ゲートは **policy のみ達成、value は未達** と記録する。データ 7.5k 局面・2000 step の pilot であり、本 run（10 万局面・20,000 step、GPU）は未実施。
+
+Swift parity（学習済み hard モデルの export → `ichigo eval --dump-layers`）:
+
+- `models/overfit-tiny-9.ichigo`: fixture 16 局面すべてで全 4 層 bit 一致、head 許容内（max policy logit diff 7.6e-6）。`reports/pilot/overfit-tiny-swift-parity.json`
+- `models/small-9-pilot2000-cpu.ichigo`: validation 8 局面で全 8 層 bit 一致、head 許容内（1.9e-6）。`reports/pilot/small-9-pilot2000-cpu-swift-parity.json`
+
+### 工程別の所要時間
+
+| 工程 | 実測 |
+|---|---|
+| 棋譜生成 | 0（既存棋譜を使用） |
+| 特徴抽出（`ichigo features`、release） | 2,199 局 108,676 局面で 26.5 秒（659 MB JSONL） |
+| 教師ラベル生成 | 3.3〜3.4 局面/秒（b20c256、128 visits、M5 Metal）。8,000 局面まで 2,272 秒。108,676 局面全体は約 9 時間で、セッション終了時点も継続中（`data/labels-9.jsonl`、`data/labels-9.progress.log`） |
+| dataset 構築 | 8,012 ラベル → 7,512 局面（重複除去後）数秒 |
+| 生徒学習（small、CPU） | 0.28〜0.32 秒/optimizer step（effective batch 128） |
+| 離散化・head 再学習 | 学習 step に含まれる（60/30/10） |
+| 検証（hard+soft、1,024 局面上限） | 約 0.6 秒/回 |
+
+### CUDA（A4000）で実行する手順（未実行）
+
+```sh
+cd Training && uv sync                       # CUDA 版 torch はサーバー側で uv の index を指定して解決する
+uv run python -m ichigo_train doctor --out ../reports/cuda-doctor.json
+cd .. && Scripts/train_pilot.sh              # 16 局面検収 → 100 step → 2000 step → export → Swift parity
+uv run --project Training python -m ichigo_train train --config configs/train-9.json   # 本 run 20,000 step
+```
+
+`configs/train-9.json` は `data/dataset-9`（ラベル完了後に `build-data` で作成）を前提とする。CUDA 版 torch の lock、DDP（T26）、4GPU 検収は未実施。
+
+### 追加の設計判断
+
+- `label` は 1 局 1 クエリ（`analyzeTurns` に全 turn）で送り、`(id, turnNumber)` で結合する。
+- `build-data` は positions を 3 パスで stream し、labels のみ dict 保持する。
+- `fixtureMode` config キー（過学習 fixture 用、split しない）、`maxValidationPositions`、`tauFinal`、`freezeWarningThreshold` を config に追加（02-10 の例にない省略可能キー）。
+- 凍結後の hard 悪化 20% 超は run-summary の warnings に記録するのみで、区間 2 倍の再 run は自動化していない。
+- 教師選択: b18c384nbt より b20c256x2 を採用（ラベル数を優先）。両者の hash と速度を上記に記録。
+
+### レビュー指摘の修正（同日）
+
+export の置換原子性、fingerprint への全履歴/superko の包含、盤外座標・重複配置の拒否、manifest の overflow/1e300 温度、CLI の 0/1 検証を修正し、それぞれ回帰テストを追加した（`test_failed_rename_keeps_old_model`、`testFingerprintCoversMoveOrderAndHistory`、`testOffBoardCoordinatesRejected`、`testDuplicateInitialStonesRejected`、`testHugeByteLengthRejected`、`testCalibrationTemperatureNotFloatRepresentable`）。
+
+### 未検証・未解決
+
+- A4000/CUDA/DDP: 未実行。CUDA 版 torch の lock も未作成。
+- 全 108k 局面のラベル生成はセッション中に完了しない。完了後 `build-data` で `data/dataset-9` を作る。
+- value head が pilot で学習していない。原因切り分け（データ量・step 数・損失重み・head 容量）は本 run 前に行う。
+- Gumbel-STE 対照実験、通常 CNN baseline（T33）は未着手。
+- 過学習検収の hard 側は基準ぎりぎり（13/16）。
+- `generate_teacher_games.py` は未実行（既存棋譜があるため）。
+- T18 以降（evaluator、探索、GTP）は未着手。
+
+---
+
+## 2026-09-08 夜: A4000 本ランと T18〜T21
+
+### 大学 GPU サーバー（A4000 ×10）
+
+- A4000 ×10（16GB）、48 core、driver 570（CUDA 12.8 まで）。ホーム quota が逼迫していたため、プロジェクトと uv キャッシュを ローカルディスク上の作業ディレクトリ（ホームは symlink）に置いた。
+- `Training/pyproject.toml` に Linux 限定の `pytorch-cu128` index を追加し、`uv.lock` を universal に更新（Linux: torch 2.11.0+cu128、macOS: 2.14.0）。`uv sync` で CUDA 10 枚を認識。
+- KataGo 1.18.2 Linux cuda12.8 版を `tools/` に配置し、torch wheel 同梱の cudnn/cublas を `LD_LIBRARY_PATH` で使用。教師モデルは Mac と同じ g170e-b20c256x2（scp）。
+- 教師ラベル: `Scripts/split_positions.py` で 10 chunk に分割し GPU ごとに並列実行。1 GPU あたり 24 局面/秒、全 108,676 局面を約 8 分で完了（拒否 0）。Mac の Metal 版（3.4 局面/秒、10,622 局面）は停止し、本番データはサーバー版で統一（同一モデル・同一 KataGo 版、backend は CUDA。Mac 版ラベルは本番データに混ぜていない）。
+- dataset-9（サーバー）: 96,065 局面（train 85,470 / validation 5,407 / test 5,188、重複 12,611 除去）。
+- 本ラン: `configs/train-9-gpu.json`（`train-9.json` と同じ effective batch 128、microBatch のみ 8→128。microBatch 8 では 1.41 秒/step・GPU 6% と CPU 律速だったため）。GPU 0 で 0.90 秒/step、20,000 step で約 5 時間、validation 込みで約 5.5 時間の見込み（21:55 開始）。GPU 使用率 21% で、データ供給（numpy 増強・転送）が律速。結果は `runs/small-9/` に出る。
+- DDP（T26）は未実装のまま 1 GPU で実行。
+
+### 完了チケット
+
+| チケット | 成果物 | 検証 |
+|---|---|---|
+| T18 | `IchiGoEngine/LogicEvaluator.swift`（`PositionEvaluating` actor、snapshot→特徴→backend→mask）、`EvaluationAdapter.swift`（白視点、違法手 −1、raw WDL 保持、未推定分散=0） | `EvaluationAdapterTests` 4 件（黒 e=.8→.2、白→.8、draw→.5、score/ownership 反転、終局/サイズ不一致の拒否、実 tiny モデル） |
+| T19/T20 | `IchiGoEngine/Search.swift`: pure-tree PUCT（03 §4 の式そのまま、cpuct 1.5、FPU 0、白視点 backup、root 初回評価 1 visit、terminal は Core の正確な結果）、leaf batch 8 と in-flight reservation（仮の負け値 −1 加重）、node 上限、tree reuse（fingerprint 一致時のみ）、generation ID | `SearchTests` 6 件（手計算の選択/バックアップ、draw terminal=0.5 かつ NN 未呼出、合法手のみ・9/19 完走・batch≤8、例外後の reservation 解放と二重加算なし、reuse と reset/違法手拒否、node 上限） |
+| T21 | `IchiGoGTP/GTPEngine.swift`（必須コマンド一式、ID/空行/#/CRLF、genmove と kata-genmove_analyze の共通 commit、終局後 genmove=pass、undo、time_settings は sudden death のみ受理）、`SelfPlay.swift`、CLI `gtp` / `selfplay` | `GTPEngineTests` 4 件（プロトコル/エラー、play/undo/違法、analysis 書式、9/19 ランダム模型で 2 pass 終局）。実モデルで `ichigo gtp`（analysis 応答確認）と `ichigo selfplay` 2 局完走 |
+
+RinGo の `Search.swift`（KataGo 全パラメータ移植、graph search 含む 2,400 行）はそのまま持ち込まず、03 §4 が規定する簡略式を新規実装した。actor 所有のノード、reservation 付き batch 収集、`makeMove` での木昇格という構造は RinGo に倣っている。`SearchSettings` の未対応機能（graph merge、LCB、uncertainty、dynamic score utility、ponder、book）は存在しない＝off。
+
+### 既知の制限
+
+- 探索の性能: 各ノードが `GameState` を deep copy し、snapshot 生成で全点の superko 合法性を計算するため、19 路で数 visit/秒程度。時計制御（T28）と Metal（T22）の前にプロファイルが必要。
+- selfplay は温度 0・noise なしで決定的（seed は記録のみ）。T35 で温度/noise を入れるまで同一局が出る。
+- resign off、時計は `time_settings`/`time_left` を受理するだけで着手時間に未反映（T28）。
+- kata-genmove_analyze は最善候補 1 行 + root summary（仕様 §9 の初期制約どおり）。
+
+---
+
+## 2026-09-08 深夜: value head の切り分け（head v2、CNN baseline）
+
+### 観測
+
+| 実験（dataset-9-b: 7.5k 局面、2000 step、CPU） | policy top1 | expected MAE | Brier | 学習側 expected 損失 | score MAE |
+|---|---|---|---|---|---|
+| 常に 0.5 / 0 の基準 | — | 0.328 | 0.147（=ラベル分散） | 0.693（ln 2） | 5.47 |
+| logic small、head v1 | 0.173 | 0.320 | — | 0.69 で固定 | 5.47 |
+| logic small、head v2（zbar・ownMean を global head へ） | 0.212 | 0.322 | — | 0.69 で固定 | 5.5 |
+| 診断用 CNN（64ch、4 residual、同じ head/損失）`Scripts/cnn_baseline_pilot.py` | 0.382 | **0.232** | **0.115** | 0.70 → 0.49 | 4.6〜6.0 |
+
+サーバー本ラン（96k 局面、head v1、1 GPU）も 3000 step 時点で expected MAE 0.346 = 基準 0.3467、学習側 expected 損失 0.69 固定で同じ症状。policy top1 は 0.275（soft）まで上昇中。
+
+### 切り分け結果
+
+- value/score head の勾配は流れ、wdl logit は局面ごとに変動している（勾配停止ではない）。
+- pooled 特徴（m, v、v2 では zbar, ownMean も）に対する閉形式の線形プローブでも validation MAE 0.306（train 0.261）で、head の入力自体に勝敗情報がほぼない。head v2 は効果なし。
+- 同じデータ・同じ head・同じ損失の CNN は value を学習できる（MAE 0.328 → 0.232、Brier 0.147 → 0.115）。ownership MSE も 0.29 → 0.15、policy top1 も 0.21 → 0.38。
+- 結論: **データ・ラベル・head 配線の問題ではなく、現在の論理ゲート層（small、固定疎配線、2000 step）が value に必要な大域的特徴を作れていない**。policy でも CNN に大きく劣る。
+
+### 判断と次の手
+
+- head v2 は仕様（01 §4）に headVersion 2 として残す（loader は 1/2 両対応、fixture は v2 と v1 の両方）。効果は未確認のため既定にする根拠はないが、v1 に戻す理由もない。
+- 本ラン（20k step、head v1）は policy 確認のため継続。value は改善しない見込み。
+- 次は表現力側の実験（02 §8 の順序）: 幅/深さ（base プロファイル）、配線 seed、配線の再探索（bank1 の割合、dilation）、学習 step の増加。比較は同一 holdout・同一 step で CNN baseline を対照にする。
+- 探索が value 0.5 固定で動く現状では、対局は「policy の visits 分布で打つ」状態になる。
+
+## 次に実装すべきチケット
+
+本ラン完了後: `runs/small-9/checkpoint-best-hard.pt` を export → `Scripts/check_model_parity.py` → M1 ゲート（holdout の uniform CE 5% 減・MAE < 0.5 定数）→ 学習済み 9 路 20 局完走と uniform baseline 100 局（T31 の対局 runner が必要）。並行して T28（時計）、T22（Metal）、T26（DDP）。

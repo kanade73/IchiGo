@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "runId": "small-9-ddp-seed20260908",
+  "data": "data/dataset-9",
+  "out": "runs/small-9-ddp",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 32,
+  "effectiveBatch": 128,
+  "maxSteps": 20000,
+  "validationInterval": 500,
+  "checkpointInterval": 1000,
+  "gateLearningRate": 0.01,
+  "headLearningRate": 0.001,
+  "headWeightDecay": 0.0001,
+  "gradClipNorm": 1.0,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "d4",
+  "precision": "fp32"
+}

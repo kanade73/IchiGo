@@ -1,0 +1,26 @@
+2026-09-08 20:15:54+0900: Running with following config:
+logDir = analysis_logs
+maxVisits = 500
+nnCacheSizePowerOfTwo = 23
+nnMaxBatchSize = 64
+nnMutexPoolSizePowerOfTwo = 17
+nnRandomize = true
+numAnalysisThreads = 8
+numSearchThreads = 4
+reportAnalysisWinratesAs = SIDETOMOVE
+
+2026-09-08 20:15:54+0900: Analysis Engine starting...
+2026-09-08 20:15:54+0900: KataGo v1.18.2
+2026-09-08 20:15:54+0900: nnRandSeed0 = 12570895142334039595
+2026-09-08 20:15:54+0900: After dedups: nnModelFile0 = /opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz useFP16 auto
+2026-09-08 20:15:54+0900: Initializing neural net buffer to be size 19 * 19 allowing smaller boards
+2026-09-08 20:15:54+0900: Loaded config ../configs/teacher-katago-analysis.cfg
+2026-09-08 20:15:54+0900: Loaded model /opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz
+2026-09-08 20:15:54+0900: Analyzing up to 8 positions at a time in parallel
+2026-09-08 20:15:54+0900: Started, ready to begin handling requests
+2026-09-08 20:16:19+0900: /opt/homebrew/share/katago/g170e-b20c256x2-s5303129600-d1228401921.bin.gz
+2026-09-08 20:16:19+0900: NN rows: 2242
+2026-09-08 20:16:19+0900: NN batches: 184
+2026-09-08 20:16:19+0900: NN avg batch size: 12.1848
+2026-09-08 20:16:19+0900: GPU -1 finishing, processed 2242 rows 184 batches
+2026-09-08 20:16:19+0900: All cleaned up, quitting

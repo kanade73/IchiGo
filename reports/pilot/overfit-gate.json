@@ -1,0 +1,23 @@
+{
+  "pass": true,
+  "checks": [
+    {
+      "name": "soft: some validation <= 2000 steps with top1>=0.90 and MAE<=0.10",
+      "pass": true,
+      "detail": "first at step 500 (top1 1.000, MAE 0.064)"
+    },
+    {
+      "name": "hard: best-hard checkpoint top1 >= 0.80",
+      "pass": true,
+      "detail": "0.8125 at step 2000"
+    },
+    {
+      "name": "hard: best-hard checkpoint MAE <= 0.15",
+      "pass": true,
+      "detail": "0.0626"
+    }
+  ],
+  "hardStep": 2000,
+  "hardTop1": 0.8125,
+  "hardMAE": 0.0625646635890007
+}

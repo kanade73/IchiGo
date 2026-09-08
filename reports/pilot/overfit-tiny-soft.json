@@ -1,0 +1,72 @@
+{
+  "checkpoint": "runs/overfit-tiny-9/checkpoint-best-hard.pt",
+  "expectedBrier": 0.006505721714347601,
+  "expectedMAE": 0.0625646635890007,
+  "expected_result": 0.611175537109375,
+  "gates": {
+    "gateHistogram": [
+      4,
+      18,
+      13,
+      8,
+      14,
+      14,
+      23,
+      14,
+      19,
+      15,
+      14,
+      14,
+      44,
+      18,
+      20,
+      4
+    ],
+    "layers": [
+      {
+        "constantRate": 0.03125,
+        "gateEntropy": 1.468741536140442,
+        "identityRate": 0.203125,
+        "layer": 0,
+        "notRate": 0.140625,
+        "thetaGradNorm": 0.0
+      },
+      {
+        "constantRate": 0.078125,
+        "gateEntropy": 1.3091325759887695,
+        "identityRate": 0.21875,
+        "layer": 1,
+        "notRate": 0.109375,
+        "thetaGradNorm": 0.0
+      },
+      {
+        "constantRate": 0.015625,
+        "gateEntropy": 1.1737806797027588,
+        "identityRate": 0.203125,
+        "layer": 2,
+        "notRate": 0.046875,
+        "thetaGradNorm": 0.0
+      },
+      {
+        "constantRate": 0.0,
+        "gateEntropy": 1.1671342849731445,
+        "identityRate": 0.28125,
+        "layer": 3,
+        "notRate": 0.046875,
+        "thetaGradNorm": 0.0
+      }
+    ]
+  },
+  "mode": "soft",
+  "ownership": 0.11994656920433044,
+  "ownershipMSE": 0.11994656920433044,
+  "policy": 1.1677051782608032,
+  "policyTop1": 0.8125,
+  "positions": 16,
+  "score": 0.0014125545276328921,
+  "scoreMAEPoints": 0.3678804039955139,
+  "split": "validation",
+  "step": 2000,
+  "total": 1.809220496303169,
+  "wdl": 0.0
+}

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "small-9-v1",
+      "gpu": 0,
+      "config": "configs/experiments/small-9-v1.json",
+      "skip": true
+    },
+    {
+      "runId": "small-9-v2",
+      "gpu": 1,
+      "config": "configs/experiments/small-9-v2.json"
+    },
+    {
+      "runId": "base-9-v2",
+      "gpu": 2,
+      "config": "configs/experiments/base-9-v2.json"
+    },
+    {
+      "runId": "small-9-v2-wseed1",
+      "gpu": 3,
+      "config": "configs/experiments/small-9-v2-wseed1.json"
+    },
+    {
+      "runId": "small-9-v2-wseed2",
+      "gpu": 4,
+      "config": "configs/experiments/small-9-v2-wseed2.json"
+    },
+    {
+      "runId": "small-9-v2-bank30",
+      "gpu": 5,
+      "config": "configs/experiments/small-9-v2-bank30.json"
+    },
+    {
+      "runId": "small-9-v2-local",
+      "gpu": 6,
+      "config": "configs/experiments/small-9-v2-local.json"
+    },
+    {
+      "runId": "small-9-v2-gatelr03",
+      "gpu": 7,
+      "config": "configs/experiments/small-9-v2-gatelr03.json"
+    },
+    {
+      "runId": "wide-9-v2",
+      "gpu": 8,
+      "config": "configs/experiments/wide-9-v2.json"
+    },
+    {
+      "runId": "cnn-baseline-9",
+      "gpu": 9,
+      "config": "configs/experiments/cnn-baseline-9.json"
+    }
+  ]
+}

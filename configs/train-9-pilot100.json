@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "runId": "small-9-pilot100",
+  "data": "data/dataset-9",
+  "out": "runs/small-9-pilot100",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 8,
+  "effectiveBatch": 128,
+  "maxSteps": 100,
+  "validationInterval": 50,
+  "checkpointInterval": 50,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "d4",
+  "precision": "fp32",
+  "maxValidationPositions": 2048
+}

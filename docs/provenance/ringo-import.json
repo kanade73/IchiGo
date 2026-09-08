@@ -1,0 +1,267 @@
+{
+  "sourceRoot": "~/dev/univ/koubou/katago-mlx",
+  "head": "9d07c47cdf97f9bc93c619561ca980354d124ffc",
+  "workingTreeDirty": true,
+  "importedAt": "2026-09-08",
+  "note": "Verbatim copies of RinGoCore sources (module renamed to IchiGoCore via Package.swift target name only). Tests differ only by the import statement. Copyright of the original authors is retained. The reference repository was not modified.",
+  "files": [
+    {
+      "sourcePath": "Sources/RinGoCore/Board.swift",
+      "destinationPath": "Sources/IchiGoCore/Board.swift",
+      "sha256": "ff76281cfcf5eba6c2ba1cde20a48911142e0a8592d593e368b9d75296db41b6",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/BoardArea.swift",
+      "destinationPath": "Sources/IchiGoCore/BoardArea.swift",
+      "sha256": "210a532ff694b5b3d53770d621428b3793602bf1708966226a9394b1eb53ce0a",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/BoardHistory.swift",
+      "destinationPath": "Sources/IchiGoCore/BoardHistory.swift",
+      "sha256": "7b8ad3e9dcba9875e983ecfc99d9287f68e2a296b9740a9c5277a3e7f0ef8835",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/BoardLadder.swift",
+      "destinationPath": "Sources/IchiGoCore/BoardLadder.swift",
+      "sha256": "2e11158a43b025b3bde9e235aa26f1b9ccc4cc5521302a9c51b25182b24e059d",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/BoardTypes.swift",
+      "destinationPath": "Sources/IchiGoCore/BoardTypes.swift",
+      "sha256": "deff8709ee9c9455a981f5b5eb3098322c37dea09aa8b3f1dfdbc85eaeec6067",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/BoardValidation.swift",
+      "destinationPath": "Sources/IchiGoCore/BoardValidation.swift",
+      "sha256": "688f20c71322b522270a1e442063d53726e58c4ce090dfd52affbebd3737350d",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/DeterministicRand.swift",
+      "destinationPath": "Sources/IchiGoCore/DeterministicRand.swift",
+      "sha256": "473aaea9624f902d677cfd636a8497da19c9b430ea7423ce6add937ef521c93d",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/GraphHash.swift",
+      "destinationPath": "Sources/IchiGoCore/GraphHash.swift",
+      "sha256": "30b6670dc844df1fe05f374946583bc5cfca35acd57d11dfa2c27f057efd2d34",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/Hash128.swift",
+      "destinationPath": "Sources/IchiGoCore/Hash128.swift",
+      "sha256": "803baef257fb14c443d43014300f0c595ec18eac341ff6fd00ceca5a6d58c372",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/NNInputs.swift",
+      "destinationPath": "Sources/IchiGoCore/NNInputs.swift",
+      "sha256": "c8064c7f16c3bcdc1544d576e01658209ffbb93b94baa97252077354876666a1",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/Rules.swift",
+      "destinationPath": "Sources/IchiGoCore/Rules.swift",
+      "sha256": "927e57918085b860945ced8defa2cf19fe6529121938f419a0f1ae8f03bb55f5",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/Symmetry.swift",
+      "destinationPath": "Sources/IchiGoCore/Symmetry.swift",
+      "sha256": "dae65dc467eb816bf6087a034870cebf6e9b2924f792341de31e5cf2c0807e4d",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoCore/Zobrist.swift",
+      "destinationPath": "Sources/IchiGoCore/Zobrist.swift",
+      "sha256": "fcbeb76dfa2c1434a8bd28e1137cb53a869205e6cf9e377965a39b1d4ee9e353",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/BoardAreaReferenceTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/BoardAreaReferenceTests.swift",
+      "sha256": "99fd2e376b5fd9501521f807c370b1edea946fe05ed12ab2e681cbdf9b12ce84",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/BoardLadderReferenceTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/BoardLadderReferenceTests.swift",
+      "sha256": "85db84575cc8c4c1a271238c74ea95af6f790cda8a370eaa545ab556ba9aeaa3",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/BoardReferenceTestSupport.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/BoardReferenceTestSupport.swift",
+      "sha256": "677c12a111a45930a86952718852eb5aae0c328f1510e5d79f63cae47b90c363",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/BoardTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/BoardTests.swift",
+      "sha256": "36e8819911c6c0e85373cbe9047c586dbee01c708cac1e44ce93d6105ac0601a",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/GraphHashTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/GraphHashTests.swift",
+      "sha256": "2bec07703335105678be4e62cc0b868d0d657144911ad99014c68437842e5263",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/NNInputsScoringReferenceTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/NNInputsScoringReferenceTests.swift",
+      "sha256": "d1a85764c32e55c1d635234b59b75c24e199ff92ef2f92fb8a4a9bdbc61cfe4d",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/NNInputsV7GoldenTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/NNInputsV7GoldenTests.swift",
+      "sha256": "9afeeb477964edd6c1bfcbd19b9f6e45535766b47c77789dcb327484e5318e3f",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/RulesReferenceTests.swift",
+      "destinationPath": "Tests/IchiGoCoreTests/RulesReferenceTests.swift",
+      "sha256": "97e205006d242971ac122c2ace578dfbbc1f86cafa798b7a40e0f1b5d258e609",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/capture-just-made.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/capture-just-made.sgf",
+      "sha256": "97713cab881bc2d4c71cbdfdc61645180c7ed9f2eef07ec9c76cbc9eeb818fb4",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/chinese-9-nn19.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/chinese-9-nn19.sgf",
+      "sha256": "c66b1fb56c2045cf00b2547b8834fb0f699ac1d2a537a1fe56841e0a26623844",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/consecutive-passes.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/consecutive-passes.sgf",
+      "sha256": "562ef8d4305f7119b7167205881bd51df97472c3ec29479e853a591f8e061d4d",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/empty-19.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/empty-19.sgf",
+      "sha256": "e036296d1683850bae61fcb542ee4b32f334e0cb8372f9a03e31066b2ab886f9",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/japanese-midgame.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/japanese-midgame.sgf",
+      "sha256": "34aba971a079a95f69f42fe1e11675d7fccd1c934d3f1b2fb42ff5230056ac9e",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/komi-0.5.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/komi-0.5.sgf",
+      "sha256": "90fb134b745c3b492b3d70369687860207f71b7124ae0b1275f188b53fc44e13",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/opening-6.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/opening-6.sgf",
+      "sha256": "b37a092e311597410b096bb88d3c83032b078fda329d0a12df699601a343042f",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/simple-ko.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/simple-ko.sgf",
+      "sha256": "28213fffe76465b7a7c741eb95e2a5e7e61e195647d244fa1ce49fa9c335d6e0",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Fixtures/working-ladder.sgf",
+      "destinationPath": "Tests/IchiGoCoreTests/Fixtures/working-ladder.sgf",
+      "sha256": "dd6a0470e6aba77b17617b7d92e2b4982f2c2044d7a68e150c35646bd64d9ac5",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/capture-just-made.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/capture-just-made.json",
+      "sha256": "fa84d9c1ac0fd7e60369771ee1666bf3c3e63a6ba137ed8c7d7f4fb8a7d31dc4",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/chinese-9-nn19.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/chinese-9-nn19.json",
+      "sha256": "ef70407ce749187eb2dc91b00c03a83300159cad76b191f8659241e48eefac0c",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/consecutive-passes.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/consecutive-passes.json",
+      "sha256": "0d413a1042f656622138070da0258841b742bb81fef4d28ef03c041f6a1111a6",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/empty-19.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/empty-19.json",
+      "sha256": "4205cd78e1176650b6090001e573af76cc81c0012b6982000eb2bdbb0bc50b11",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/japanese-midgame.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/japanese-midgame.json",
+      "sha256": "fa549ea2a75a71b1daa6c6e9e466f207f4a20751518f818aceb8674f71ecfbd5",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/komi-0.5.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/komi-0.5.json",
+      "sha256": "01521768e271155af4e720eb4dc43ad50ecc33c431f21aadbf7095e1f6d031b7",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/opening-6.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/opening-6.json",
+      "sha256": "dda12a10ebc50a9545f9e945f28a578670851b6640939822dfca41cf6cce22a8",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/simple-ko.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/simple-ko.json",
+      "sha256": "ede0b1055c32fce0f0bc02b2ec8fb91027563ac4757b60ed433be1a58aa8c269",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Tests/RinGoCoreTests/Goldens/working-ladder.json",
+      "destinationPath": "Tests/IchiGoCoreTests/Goldens/working-ladder.json",
+      "sha256": "c37b694eb0e71ae064fa87b2f893fb88aa89ce16df385d50b3f66d6ab9310c39",
+      "modifiedOnImport": []
+    },
+    {
+      "sourcePath": "Sources/RinGoEngine/SGFReader.swift",
+      "destinationPath": "Sources/IchiGoFeatures/SGFReader.swift",
+      "sha256": "24ce84175666c646e65565425a60cd1f9fb819ff8e0baa4fd36c950f07c34be6",
+      "modifiedOnImport": [
+        "import RinGoCore -> import IchiGoCore"
+      ]
+    }
+  ]
+}

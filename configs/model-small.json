@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "profile": "small",
+  "channels": 256,
+  "layers": 8,
+  "dilations": [
+    1,
+    1,
+    2,
+    1,
+    4,
+    1,
+    8,
+    1
+  ],
+  "inputChannels": 32,
+  "globalFeatures": 4,
+  "headLocalHidden": 64,
+  "headGlobalHidden": 128,
+  "wiringSeed": 20260908,
+  "wiringGenerator": "numpy-pcg64",
+  "identityInit": {
+    "everyNthChannel": 4,
+    "gate": 12,
+    "theta": 3.0
+  },
+  "thetaInitStd": 0.05,
+  "note": "Values mirror docs/spec/01-network.md \u00a73; the exported wiring file, not this config, is the reproducibility authority."
+}

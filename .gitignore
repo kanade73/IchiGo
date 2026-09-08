@@ -1,0 +1,19 @@
+# build / environments
+.build/
+.swiftpm/
+Training/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# generated data, runs, models and third-party binaries (regenerate with the documented commands)
+data/
+runs/
+models/
+teachers/
+tools/
+*.log
+
+# keep small reports and fixtures
+!reports/pilot/*.json

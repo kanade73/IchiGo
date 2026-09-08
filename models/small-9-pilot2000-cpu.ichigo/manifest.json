@@ -1,0 +1,173 @@
+{
+  "boardSizes": [
+    9
+  ],
+  "calibrationTemperature": 1.0,
+  "channels": 256,
+  "dilations": [
+    1,
+    1,
+    2,
+    1,
+    4,
+    1,
+    8,
+    1
+  ],
+  "endianness": "little",
+  "featureVersion": 1,
+  "files": {
+    "gates.u8": {
+      "byteLength": 2048,
+      "sha256": "b9479aebf0ae5197a975d4cfb27a19330e494e0082fa8b1352c1f18c71b8fc53"
+    },
+    "heads.f32": {
+      "byteLength": 465692,
+      "sha256": "f28d9cb7cdf50ab4fad4a94706ce85a7f703ab27273bac6d7e0ab515cb411f5d"
+    },
+    "wiring.i32": {
+      "byteLength": 65536,
+      "sha256": "1b946d7904b7d30e0acec07f2b8f9f3d69520a1cb0ea841be52e6e53dcbe5a90"
+    }
+  },
+  "format": "ichigo.logic",
+  "gateEncoding": "truth-table-lsb-2a-plus-b",
+  "headTensors": [
+    {
+      "byteLength": 197632,
+      "byteOffset": 0,
+      "name": "Wlocal",
+      "shape": [
+        772,
+        64
+      ]
+    },
+    {
+      "byteLength": 256,
+      "byteOffset": 197632,
+      "name": "blocal",
+      "shape": [
+        64
+      ]
+    },
+    {
+      "byteLength": 256,
+      "byteOffset": 197888,
+      "name": "Wpolicy",
+      "shape": [
+        64,
+        1
+      ]
+    },
+    {
+      "byteLength": 4,
+      "byteOffset": 198144,
+      "name": "bpolicy",
+      "shape": [
+        1
+      ]
+    },
+    {
+      "byteLength": 256,
+      "byteOffset": 198148,
+      "name": "Wowner",
+      "shape": [
+        64,
+        1
+      ]
+    },
+    {
+      "byteLength": 4,
+      "byteOffset": 198404,
+      "name": "bowner",
+      "shape": [
+        1
+      ]
+    },
+    {
+      "byteLength": 264192,
+      "byteOffset": 198408,
+      "name": "Wglobal",
+      "shape": [
+        516,
+        128
+      ]
+    },
+    {
+      "byteLength": 512,
+      "byteOffset": 462600,
+      "name": "bglobal",
+      "shape": [
+        128
+      ]
+    },
+    {
+      "byteLength": 512,
+      "byteOffset": 463112,
+      "name": "Wpass",
+      "shape": [
+        128,
+        1
+      ]
+    },
+    {
+      "byteLength": 4,
+      "byteOffset": 463624,
+      "name": "bpass",
+      "shape": [
+        1
+      ]
+    },
+    {
+      "byteLength": 1536,
+      "byteOffset": 463628,
+      "name": "Wwdl",
+      "shape": [
+        128,
+        3
+      ]
+    },
+    {
+      "byteLength": 12,
+      "byteOffset": 465164,
+      "name": "bwdl",
+      "shape": [
+        3
+      ]
+    },
+    {
+      "byteLength": 512,
+      "byteOffset": 465176,
+      "name": "Wscore",
+      "shape": [
+        128,
+        1
+      ]
+    },
+    {
+      "byteLength": 4,
+      "byteOffset": 465688,
+      "name": "bscore",
+      "shape": [
+        1
+      ]
+    }
+  ],
+  "headVersion": 1,
+  "layers": 8,
+  "layout": "NHWC",
+  "rulesId": "cgos-area-psk-v1",
+  "trainingProvenance": {
+    "checkpoint": "checkpoint-best-hard.pt",
+    "generatedAt": "2026-09-08T12:01:36+00:00",
+    "profile": "small",
+    "seed": 20260908
+  },
+  "valuePerspective": "to-move",
+  "version": 1,
+  "wdlOrder": [
+    "win",
+    "draw",
+    "loss"
+  ]
+}

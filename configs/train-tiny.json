@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "runId": "overfit-tiny-9-seed20260908",
+  "data": "data/overfit-9",
+  "out": "runs/overfit-tiny-9",
+  "boardSize": 9,
+  "profile": "tiny",
+  "seed": 20260908,
+  "device": "cpu",
+  "microBatch": 16,
+  "effectiveBatch": 16,
+  "maxSteps": 2000,
+  "validationInterval": 100,
+  "checkpointInterval": 500,
+  "gateLearningRate": 0.01,
+  "headLearningRate": 0.001,
+  "headWeightDecay": 0.0001,
+  "gradClipNorm": 1.0,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "none",
+  "precision": "fp32",
+  "fixtureMode": true
+}

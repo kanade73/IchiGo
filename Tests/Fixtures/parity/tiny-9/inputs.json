@@ -1,0 +1,14 @@
+{
+  "boardSize": 9,
+  "batch": 4,
+  "channels": 64,
+  "layers": 4,
+  "seed": 20260908,
+  "profile": "tiny",
+  "headVersion": 2,
+  "spatialFile": "spatial.u8",
+  "globalFile": "global.f32",
+  "legalFile": "legal.u8",
+  "layersFile": "layers.u8",
+  "layersLayout": "[L,B,S,S,C] uint8"
+}

@@ -1,0 +1,49 @@
+{
+  "observedDate": "2026-09-08",
+  "sourceRoot": "~/dev/univ/koubou/katago-mlx",
+  "head": "9d07c47cdf97f9bc93c619561ca980354d124ffc",
+  "workingTreeDirty": true,
+  "purpose": "read-only specification research snapshot; not an import manifest",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "aa861ed8511868aca0098c8df97872a86148471daa911f9e1af2ba59301c81d8"
+    },
+    {
+      "path": "README.md",
+      "sha256": "e7efd6347be4a501cce1bb869ccd0ff36c1f0c307af7b18f3ffed06c982b99be"
+    },
+    {
+      "path": "Package.swift",
+      "sha256": "c0ca9165c6d3c71905614f708db12248b0a3ee7513ad973fd2b32752c324f500"
+    },
+    {
+      "path": "Sources/RinGoEngine/NNEvaluator.swift",
+      "sha256": "03c3c2261781a1b0a3a90abffa1203036ea7c99b5ea5d5e3c516c186f0896ed5"
+    },
+    {
+      "path": "Sources/RinGoEngine/NNOutput.swift",
+      "sha256": "1d4bf09aa925e630bb952b060d4be69f016c0bd0fc3a1e8645af82527beff2bb"
+    },
+    {
+      "path": "Sources/RinGoEngine/Search.swift",
+      "sha256": "de690e8ea23311cdfb21dfa6473695b7101fdfaf287510edc41dc063268235e8"
+    },
+    {
+      "path": "Sources/RinGoEngine/GTPAnalysis.swift",
+      "sha256": "0034d5397bade6516df67a3dc88cdeb57e362fb5fc97b2e52164e0e68e2f3553"
+    },
+    {
+      "path": "Sources/RinGoEngine/GTPEngine.swift",
+      "sha256": "2714f57b908f8ffd9fe6cc3cdff748e896701fe831baea13f6d2e4ee18bb0931"
+    },
+    {
+      "path": "Sources/RinGoCore/Rules.swift",
+      "sha256": "927e57918085b860945ced8defa2cf19fe6529121938f419a0f1ae8f03bb55f5"
+    },
+    {
+      "path": "Scripts/cgos/README.md",
+      "sha256": "bd89422a6c295ac3d01d5354baf695580c7303c309eaa43b9d448a27cd7ba1cc"
+    }
+  ]
+}
