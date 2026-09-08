@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p4-local-bank30-200k",
+      "gpu": 0,
+      "config": "configs/experiments/phase2/p4-local-bank30-200k.json",
+      "out": "runs/p4-local-bank30-200k"
+    },
+    {
+      "runId": "p4-local-wide512-200k",
+      "gpu": 1,
+      "config": "configs/experiments/phase2/p4-local-wide512-200k.json",
+      "out": "runs/p4-local-wide512-200k"
+    },
+    {
+      "runId": "p4-local-16L-200k",
+      "gpu": 2,
+      "config": "configs/experiments/phase2/p4-local-16L-200k.json",
+      "out": "runs/p4-local-16L-200k"
+    },
+    {
+      "runId": "p4-local-gl30-200k",
+      "gpu": 3,
+      "config": "configs/experiments/phase2/p4-local-gl30-200k.json",
+      "out": "runs/p4-local-gl30-200k"
+    },
+    {
+      "runId": "p4-local-16L-wide512-200k",
+      "gpu": 5,
+      "config": "configs/experiments/phase2/p4-local-16L-wide512-200k.json",
+      "out": "runs/p4-local-16L-wide512-200k"
+    }
+  ]
+}

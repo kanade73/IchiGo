@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p5-gumbel-local",
+      "gpu": 4,
+      "config": "configs/experiments/phase5/p5-gumbel-local.json",
+      "out": "runs/p5-gumbel-local"
+    },
+    {
+      "runId": "p5-gumbel-base",
+      "gpu": 6,
+      "config": "configs/experiments/phase5/p5-gumbel-base.json",
+      "out": "runs/p5-gumbel-base"
+    },
+    {
+      "runId": "p5-tau05-ent",
+      "gpu": 7,
+      "config": "configs/experiments/phase5/p5-tau05-ent.json",
+      "out": "runs/p5-tau05-ent"
+    },
+    {
+      "runId": "p5-learned-k8",
+      "gpu": 8,
+      "config": "configs/experiments/phase5/p5-learned-k8.json",
+      "out": "runs/p5-learned-k8"
+    },
+    {
+      "runId": "p5-learned-k8-gumbel",
+      "gpu": 9,
+      "config": "configs/experiments/phase5/p5-learned-k8-gumbel.json",
+      "out": "runs/p5-learned-k8-gumbel"
+    }
+  ]
+}

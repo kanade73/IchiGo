@@ -1,0 +1,13 @@
+{
+  "_comment": "Template only -- copy this file, fill in real values, and NEVER commit the copy if it contains a real host/username. The password itself never goes in this file (see password_file).",
+  "host": "CHANGE_ME.cgos.example",
+  "port": 6867,
+  "username": "CHANGE_ME",
+  "password_file": "secrets/cgos-password.txt",
+  "board_size": 9,
+  "engine_argv": [".build/release/ichigo", "gtp", "--model-9", "models/CHANGE_ME.ichigo"],
+  "analysis": true,
+  "state_dir": "../runs/cgos/ichigo/state",
+  "log_dir": "../runs/cgos/ichigo/logs",
+  "max_games": null
+}

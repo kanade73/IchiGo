@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "runId": "p5-gumbel-local",
+  "data": "data/dataset-9",
+  "out": "runs/p5-gumbel-local",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 128,
+  "effectiveBatch": 128,
+  "maxSteps": 100000,
+  "validationInterval": 1000,
+  "checkpointInterval": 5000,
+  "gateLearningRate": 0.1,
+  "dilations": [1, 1, 1, 1, 1, 1, 1, 1],
+  "discretization": "gumbel-ste-90-10",
+  "augmentation": "d4",
+  "precision": "fp32",
+  "headVersion": 2
+}

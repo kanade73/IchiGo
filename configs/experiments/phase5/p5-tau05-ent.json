@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "runId": "p5-tau05-ent",
+  "data": "data/dataset-9",
+  "out": "runs/p5-tau05-ent",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 128,
+  "effectiveBatch": 128,
+  "maxSteps": 100000,
+  "validationInterval": 1000,
+  "checkpointInterval": 5000,
+  "gateLearningRate": 0.1,
+  "dilations": [1, 1, 1, 1, 1, 1, 1, 1],
+  "tauStart": 0.5,
+  "tauFinal": 0.1,
+  "gateEntropyWeight": 0.01,
+  "augmentation": "d4",
+  "precision": "fp32",
+  "headVersion": 2
+}

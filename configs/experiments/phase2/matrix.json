@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p2-small-gl03",
+      "gpu": 1,
+      "config": "configs/experiments/phase2/p2-small-gl03.json",
+      "out": "runs/p2-small-gl03"
+    },
+    {
+      "runId": "p2-small-gl03-bank30",
+      "gpu": 3,
+      "config": "configs/experiments/phase2/p2-small-gl03-bank30.json",
+      "out": "runs/p2-small-gl03-bank30"
+    },
+    {
+      "runId": "p2-small-gl10",
+      "gpu": 4,
+      "config": "configs/experiments/phase2/p2-small-gl10.json",
+      "out": "runs/p2-small-gl10"
+    },
+    {
+      "runId": "p2-small-gl03-hl003",
+      "gpu": 5,
+      "config": "configs/experiments/phase2/p2-small-gl03-hl003.json",
+      "out": "runs/p2-small-gl03-hl003"
+    },
+    {
+      "runId": "p2-small-gl03-wseed1",
+      "gpu": 6,
+      "config": "configs/experiments/phase2/p2-small-gl03-wseed1.json",
+      "out": "runs/p2-small-gl03-wseed1"
+    },
+    {
+      "runId": "p2-cnn-baseline",
+      "gpu": 7,
+      "config": "configs/experiments/phase2/p2-cnn-baseline.json",
+      "out": "runs/p2-cnn-baseline"
+    },
+    {
+      "runId": "p2-small-gl03-200k",
+      "gpu": 9,
+      "config": "configs/experiments/phase2/p2-small-gl03-200k.json",
+      "out": "runs/p2-small-gl03-200k"
+    }
+  ]
+}

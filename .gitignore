@@ -17,7 +17,6 @@ tools/
 .claude/
 .vscode/
 analysis_logs/
-configs/
 
 # keep small reports and fixtures
 !reports/pilot/*.json

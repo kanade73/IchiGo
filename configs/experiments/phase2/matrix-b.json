@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p2-small-gl10-bank30",
+      "gpu": 2,
+      "config": "configs/experiments/phase2/p2-small-gl10-bank30.json",
+      "out": "runs/p2-small-gl10-bank30"
+    },
+    {
+      "runId": "p2-base-gl10",
+      "gpu": 8,
+      "config": "configs/experiments/phase2/p2-base-gl10.json",
+      "out": "runs/p2-base-gl10"
+    }
+  ]
+}

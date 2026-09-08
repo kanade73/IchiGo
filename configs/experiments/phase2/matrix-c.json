@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p3-small-gl30",
+      "gpu": 1,
+      "config": "configs/experiments/phase2/p3-small-gl30.json",
+      "out": "runs/p3-small-gl30"
+    },
+    {
+      "runId": "p3-small-gl10-hl003",
+      "gpu": 3,
+      "config": "configs/experiments/phase2/p3-small-gl10-hl003.json",
+      "out": "runs/p3-small-gl10-hl003"
+    },
+    {
+      "runId": "p3-wide-gl10",
+      "gpu": 4,
+      "config": "configs/experiments/phase2/p3-wide-gl10.json",
+      "out": "runs/p3-wide-gl10"
+    },
+    {
+      "runId": "p3-small-gl10-tau01",
+      "gpu": 5,
+      "config": "configs/experiments/phase2/p3-small-gl10-tau01.json",
+      "out": "runs/p3-small-gl10-tau01"
+    },
+    {
+      "runId": "p3-small-gl10-200k",
+      "gpu": 6,
+      "config": "configs/experiments/phase2/p3-small-gl10-200k.json",
+      "out": "runs/p3-small-gl10-200k"
+    },
+    {
+      "runId": "p3-small-gl10-local",
+      "gpu": 7,
+      "config": "configs/experiments/phase2/p3-small-gl10-local.json",
+      "out": "runs/p3-small-gl10-local"
+    }
+  ]
+}
