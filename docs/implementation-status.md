@@ -545,3 +545,26 @@ A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/
 
 - `p8-small-headv3-200k`（MAE 0.267）vs チャンピオン `p4-local-wide512-200k`（head v2）: 47 勝 5 分 48 敗、平均 0.495、CI [0.405, 0.585]、事故 0。**互角でチャンピオン交代なし。** small の value 改善は wide512 の policy 差を埋める程度で、勝ち越すには「幅 + head v3 + 3 倍データ」（学習中）が必要。
 - Mac 側の対局はすべて終了。以降、Mac は不要。
+
+### 2026-09-10 深夜（続報）: プレイアウト value（`--value-source rollout`）実装・A/B 完了
+
+15:30 に記録した等時間 A/B（`p4-local-wide512-200k`、9 路 komi 7、`configs/openings/random4-9x9-seed20260909.jsonl` 50 開局×色交換、seed 20260910、事故 0 で共通）に続き、固定 visits の比較を完走した。実装は `Sources/IchiGoEngine/EvaluationAdapter.swift`（`ValueSource.Mode.rollout(count:maxMoves:weightNetwork:)`）、`Sources/IchiGoEngine/Search.swift`（`rolloutBlendedWhiteValue`/`applyRollout`: leaf 展開後にネットワーク値のベースラインを`expand`で確定させず、count 本のプレイアウトを batched（1 ステップ＝ leaf ごとに 1 回の evaluator 呼び出し、終局したラインは脱落）で回してから初めて `expand` を呼ぶことで、generation 不一致時に半展開ノードを残さない設計にした）、`Sources/IchiGoEngine/SeededRNG.swift`（`SplitMix64`、`SearchSettings.rolloutRNGSeed` で探索全体を通じて再現可能）、`Sources/IchiGoGTP/ValueSourceFlags.swift`/`GTPEngine.swift`（`--rollout-count`既定8/`--rollout-max-moves`既定 2*S^2、genmove ごとに `genmove rollout: leaves=... avgPlayoutsPerLeaf=... maxMovesHitFraction=...` をログ）、`Sources/ichigo/main.swift`（CLI 配線・usage）。`SearchTests.swift` に 5 件追加（`PassOnlyEvaluator` で局面をそのまま即終局させる決定的テストで value_rollout が手計算どおり一致・maxMoves 到達時の近似とフラグ・count/blend の数式・count=0 退化、`RootUniformThenPassEvaluator` を使った捕獲局面で wdl 一様でも正しい手を選ぶこと）、`GTPEngineTests.swift` に 2 件追加（フラグ parse、genmove ログの rollout diagnostics 行）。`swift build`・`swift build -c release --product ichigo`・`swift test --filter 'IchiGoEngineTests|IchiGoGTPTests'`（41 tests、skip 1、0 failures）は全通過。
+
+A/B 結果（`reports/matches/`配下、いずれも事故 0）:
+
+| 対戦（A vs network=B） | 条件 | 勝-分-敗(A) | 平均得点(A) | paired CI95 | visits/手 A / B |
+|---|---|---|---|---|---|
+| rollout 8 本、W=0.5 | 等時間 60 秒 sudden death | 13-1-86 | 0.135 | [0.075, 0.20] | 18 / 6,332 |
+| rollout 4 本、W=0.7 | 等時間 60 秒 sudden death | 11-1-88 | 0.115 | [0.06, 0.175] | 56 / 6,133 |
+| rollout 8 本、W=0.5 | 固定 400 visits（両者） | 5-0-1 | 0.833 | [0.5, 1.0]（n=6、pairedはn=3） | 400 / 400 |
+
+四つ目の表（rollout 8 本・W=0.5 について、時間コストと value の質を分離）:
+
+| 条件 | 勝率(A) | visits/手 A | 解釈 |
+|---|---|---|---|
+| 等時間 60 秒 | 0.135 | 18 | visits 不足（B の約1/350）で惨敗 |
+| 固定 400 visits | 0.833 | 400 | 同一 visits ならむしろ優勢（n=6 と小標本だが CI 下限が 0.5） |
+
+固定 400 visits の比較は 100 局ではなく 6 局（3 開局×色交換、`--genmove-timeout 600`）に縮小した: A 側は 1 手ごとに leaf を新規展開するたび count=8 本のプレイアウトを（`avgPlayoutsPerLeaf`≈8.00、`maxMovesHitFraction`≈0.000＝ほぼ全プレイアウトが自然な2手パスで終局）毎手 evaluator 呼び出しで進めるため、1 手あたり数十秒、1 局 15〜30 分かかり、100 局では 30 時間規模になる見積もりだった。加えて実行中にこのセッションの nohup 済みバックグラウンドプロセスが環境側の要因で 2 回強制終了された（システムスリープではない — `uptime` 35 日・`caffeinate` 稼働中を確認、再起動ログもなし。原因は特定できていないが、セッション境界での孤児プロセス回収の可能性が高い）。3 回目の起動（`--genmove-timeout 600`）で完走、事故 0。
+
+結論: 等時間での大敗は value_rollout 自体の質の問題ではなく、計算コスト由来の visits 枯渇が原因と切り分けられた。固定 visits でそろえると、n=6 と小標本ながら rollout ブレンド（W=0.5）が network 単体に勝ち越しており（CI 下限がちょうど 0.5、事故 0）、09-10 06:00 で不採用にした ownership 由来 value とは対照的に、プレイアウト由来の value 自体には探索に有用な情報がある可能性が高い。ただし現在の推論速度（B の 400 visits が 1 手 0.1 秒未満、A の rollout(8) が 1 手数十秒、約2〜3桁遅い）では実運用の時間制御下（sudden death や固定秒数）で全く成立しない。次の一手の候補: (1) count・maxPlayoutMoves を大幅に下げて value の質と速度のバランス点を探る、(2) rollout 専用の軽量・高速バックエンド（cpu-packed など）の強制、(3) 当面は `.network` を既定のまま維持し `--value-source rollout` は実装として残す（今回の実装・CLI・ログ機構自体は事故ゼロで正しく動作した）。n が小さい固定 visits 比較は追試の余地があるが、時間コストの結論（等時間では不成立）は 100 局規模の等時間 A/B 2 本で確定している。
