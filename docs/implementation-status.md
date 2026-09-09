@@ -326,3 +326,11 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - T30（CGOS ローカル統合）: 公開 cgos 実装（revision 4dcff875…）の文法を再実装した client、fake server、切断→setup replay、SIGTERM 対局間停止、log rotation。実エンジン 2 台で 2 局完走を含む 37 テスト。実サーバー未接続。
 - T31（対局 runner）: `python -m ichigo_train match`、uniform baseline、paired bootstrap、`Scripts/run_baseline_match.sh`。
 - commits: T28 5eab2d9、T31 ee924df、T30 54e84d2。
+
+### 2026-09-09 午後: M2a 部品（T22/T25/T29、探索高速化）
+
+- T22 Metal-byte backend（`LogicMetal/MetalBackend.swift`、`Resources/logic_byte.metal`、実行時コンパイル: SwiftPM 6.0 は .metal を metallib 化しないため）: tiny-9/19/headv1 で全層 bit 一致、B=0〜64 で ScalarBackend と一致。`make check-metal` 14 件。
+- T25 `ichigo benchmark` と BackendSelector（`configs/backend-profile.example.json`）。M5 実測（release、small モデル 9 路）: gate は Metal で B=32 時 13.99→2.89 ms（4.8 倍）だが CPU head が 79 ms で支配的。B=1 p95 3.2 ms（目標 20 ms 達成）、B=32 は 389 局面/秒（目標 1000 未達）。→ T23/T24（packed と Metal heads、CPU head の Accelerate 化）を着手。
+- T29 校正: `sgf-results`（RE 解析、2,199 局: 投了 1,575 / 点数 624）、`calibrate`（温度 fit、Brier/ECE、game bootstrap、100 局未満は insufficientSamples）、`export --calibration`、Swift 後処理の温度適用。小 pilot では T≈0.82、test 12 局のため未検証扱い。
+- 探索: 配置を 8 層に限定、fingerprint の逐次更新、edge index 保持で 267→328 visits/秒（実モデル）。fake evaluator では 9 路 4,509 / 19 路 1,444 visits/秒で、木の overhead は小さく NN が律速。
+- 回帰: Swift 147 + Metal 14、pytest 189、commit 211cbd1。
