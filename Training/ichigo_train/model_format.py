@@ -2,8 +2,8 @@
 
     model.ichigo/
       manifest.json   JSON, no NaN/Infinity
-      wiring.i32      int32 little-endian [L, C, 2, 4]  (bank, channel, dx, dy)
-      gates.u8        uint8 [L, C]  gate ids 0..15 (truth-table encoding, row = 2a+b)
+      wiring.i32      int32 little-endian [L, C, n, 4]  (bank, channel, dx, dy)
+      gates.u8        uint8 [L, C] for arity 2, or gates.u16 little-endian uint16 [L, C] for LUT4
       heads.f32       float32 little-endian, 14 tensors at the byte offsets listed in the manifest
 
 Every check that the Swift loader performs (file names, sizes, sha256, ranges, overlaps,
@@ -29,7 +29,9 @@ VERSION = 1
 FEATURE_VERSION = 1
 RULES_ID = "cgos-area-psk-v1"
 GATE_ENCODING = "truth-table-lsb-2a-plus-b"
+LUT4_GATE_ENCODING = "lut4-msb-first"
 FILE_NAMES = ("wiring.i32", "gates.u8", "heads.f32")
+LUT4_FILE_NAMES = ("wiring.i32", "gates.u16", "heads.f32")
 MIN_CHANNELS, MAX_CHANNELS = 16, 4096
 MIN_LAYERS, MAX_LAYERS = 1, 64
 MIN_DILATION, MAX_DILATION = 1, 19
@@ -76,18 +78,23 @@ def build_manifest(
     training_provenance: dict,
     calibration_temperature: float = 1.0,
     head_version: int = HEAD_VERSION,
+    gate_arity: int = 2,
 ) -> dict:
+    file_names = file_names_for_arity(gate_arity)
+    gates_name = file_names[1]
+    gate_encoding = GATE_ENCODING if gate_arity == 2 else LUT4_GATE_ENCODING
     return {
         "format": FORMAT,
         "version": VERSION,
         "featureVersion": FEATURE_VERSION,
         "headVersion": int(head_version),
+        "gateArity": int(gate_arity),
         "boardSizes": list(board_sizes),
         "rulesId": RULES_ID,
         "channels": int(channels),
         "layers": len(dilations),
         "dilations": [int(d) for d in dilations],
-        "gateEncoding": GATE_ENCODING,
+        "gateEncoding": gate_encoding,
         "layout": "NHWC",
         "endianness": "little",
         "valuePerspective": "to-move",
@@ -95,7 +102,7 @@ def build_manifest(
         "calibrationTemperature": float(calibration_temperature),
         "files": {
             "wiring.i32": {"byteLength": len(wiring_bytes), "sha256": sha256_bytes(wiring_bytes)},
-            "gates.u8": {"byteLength": len(gates_bytes), "sha256": sha256_bytes(gates_bytes)},
+            gates_name: {"byteLength": len(gates_bytes), "sha256": sha256_bytes(gates_bytes)},
             "heads.f32": {"byteLength": len(heads_bytes), "sha256": sha256_bytes(heads_bytes)},
         },
         "headTensors": head_tensors,
@@ -124,15 +131,18 @@ def pack_heads(heads: dict[str, np.ndarray], channels: int, head_version: int = 
 
 def serialize_model(wiring: np.ndarray, gates: np.ndarray, heads: dict[str, np.ndarray], dilations: list[int],
                     board_sizes: list[int], training_provenance: dict, calibration_temperature: float = 1.0,
-                    head_version: int = HEAD_VERSION) -> dict[str, bytes]:
+                    head_version: int = HEAD_VERSION, gate_arity: int = 2) -> dict[str, bytes]:
     """Returns ``{filename: bytes}`` for the four files, after validating everything."""
+    if gate_arity not in (2, 4):
+        raise ModelFormatError("gate_arity must be 2 or 4")
     wiring = np.ascontiguousarray(np.asarray(wiring, dtype="<i4"))
-    gates = np.ascontiguousarray(np.asarray(gates, dtype=np.uint8))
-    validate_wiring(wiring, dilations)
+    gates_dtype = np.dtype("<u2") if gate_arity == 4 else np.dtype("u1")
+    gates = np.ascontiguousarray(np.asarray(gates, dtype=gates_dtype))
+    validate_wiring(wiring, dilations, gate_arity)
     L, C = wiring.shape[:2]
     if gates.shape != (L, C):
         raise ModelFormatError(f"gates must be [L,C]={L,C}, got {gates.shape}")
-    if gates.max() > 15:
+    if gate_arity == 2 and gates.max() > 15:
         raise ModelFormatError("gate id > 15")
     _check_dims(C, dilations, board_sizes)
     heads_bytes, entries = pack_heads(heads, C, head_version)
@@ -142,10 +152,20 @@ def serialize_model(wiring: np.ndarray, gates: np.ndarray, heads: dict[str, np.n
         board_sizes=board_sizes, channels=C, dilations=dilations, wiring_bytes=wiring_bytes,
         gates_bytes=gates_bytes, heads_bytes=heads_bytes, head_tensors=entries,
         training_provenance=training_provenance, calibration_temperature=calibration_temperature, head_version=head_version,
+        gate_arity=gate_arity,
     )
     _reject_nonfinite(manifest)
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
-    return {"manifest.json": manifest_bytes, "wiring.i32": wiring_bytes, "gates.u8": gates_bytes, "heads.f32": heads_bytes}
+    file_names = file_names_for_arity(gate_arity)
+    return {"manifest.json": manifest_bytes, file_names[0]: wiring_bytes, file_names[1]: gates_bytes, file_names[2]: heads_bytes}
+
+
+def file_names_for_arity(gate_arity: int) -> tuple[str, str, str]:
+    if gate_arity == 2:
+        return FILE_NAMES
+    if gate_arity == 4:
+        return LUT4_FILE_NAMES
+    raise ModelFormatError(f"unsupported gate arity {gate_arity}")
 
 
 def _check_dims(C: int, dilations: list[int], board_sizes: list[int]) -> None:
@@ -197,14 +217,17 @@ def read_model(path: str) -> LoadedModel:
         raise ModelFormatError(f"manifest.json: {e}") from e
     validate_manifest(manifest)
     files = manifest["files"]
-    wiring_b = _read_file_checked(path, "wiring.i32", files["wiring.i32"])
-    gates_b = _read_file_checked(path, "gates.u8", files["gates.u8"])
-    heads_b = _read_file_checked(path, "heads.f32", files["heads.f32"])
+    gate_arity = int(manifest.get("gateArity", 2))
+    file_names = file_names_for_arity(gate_arity)
+    wiring_b = _read_file_checked(path, file_names[0], files[file_names[0]])
+    gates_b = _read_file_checked(path, file_names[1], files[file_names[1]])
+    heads_b = _read_file_checked(path, file_names[2], files[file_names[2]])
     L, C = manifest["layers"], manifest["channels"]
-    wiring = np.frombuffer(wiring_b, dtype="<i4").reshape(L, C, 2, 4).astype(np.int32)
-    gates = np.frombuffer(gates_b, dtype=np.uint8).reshape(L, C).copy()
-    validate_wiring(wiring, manifest["dilations"])
-    if gates.max() > 15:
+    wiring = np.frombuffer(wiring_b, dtype="<i4").reshape(L, C, gate_arity, 4).astype(np.int32)
+    gates_dtype = "<u2" if gate_arity == 4 else np.uint8
+    gates = np.frombuffer(gates_b, dtype=gates_dtype).reshape(L, C).copy()
+    validate_wiring(wiring, manifest["dilations"], gate_arity)
+    if gate_arity == 2 and gates.max() > 15:
         raise ModelFormatError("gate id > 15")
     heads = {}
     for entry in manifest["headTensors"]:
@@ -243,7 +266,12 @@ def validate_manifest(m: dict) -> None:
         raise ModelFormatError(f"unsupported headVersion {m['headVersion']}")
     if m["rulesId"] != RULES_ID:
         raise ModelFormatError(f"unsupported rulesId {m['rulesId']!r}")
-    if m["gateEncoding"] != GATE_ENCODING or m["layout"] != "NHWC" or m["endianness"] != "little":
+    gate_arity = m.get("gateArity", 2)
+    if not isinstance(gate_arity, int) or isinstance(gate_arity, bool) or gate_arity not in (2, 4):
+        raise ModelFormatError("unsupported gateArity")
+    valid_encoding = ((gate_arity == 2 and m["gateEncoding"] == GATE_ENCODING) or
+                      (gate_arity == 4 and m["gateEncoding"] == LUT4_GATE_ENCODING))
+    if not valid_encoding or m["layout"] != "NHWC" or m["endianness"] != "little":
         raise ModelFormatError("unsupported encoding/layout/endianness")
     if m["valuePerspective"] != "to-move" or m["wdlOrder"] != ["win", "draw", "loss"]:
         raise ModelFormatError("unsupported value perspective or wdl order")
@@ -254,14 +282,15 @@ def validate_manifest(m: dict) -> None:
         raise ModelFormatError("channels/layers/dilations inconsistent")
     _check_dims(C, dil, m["boardSizes"])
     # byte sizes with explicit overflow-style guards
-    wiring_len = L * C * 2 * 4 * 4
-    gates_len = L * C
+    wiring_len = L * C * gate_arity * 4 * 4
+    gates_len = L * C * (2 if gate_arity == 4 else 1)
     if wiring_len + gates_len > MAX_PAYLOAD_BYTES:
         raise ModelFormatError("payload too large")
     files = m["files"]
-    if not isinstance(files, dict) or set(files) != set(FILE_NAMES):
-        raise ModelFormatError(f"files must list exactly {FILE_NAMES}")
-    for name in FILE_NAMES:
+    file_names = file_names_for_arity(gate_arity)
+    if not isinstance(files, dict) or set(files) != set(file_names):
+        raise ModelFormatError(f"files must list exactly {file_names}")
+    for name in file_names:
         e = files[name]
         if not isinstance(e, dict) or not isinstance(e.get("byteLength"), int) or e["byteLength"] < 0:
             raise ModelFormatError(f"files.{name}.byteLength invalid")
@@ -269,9 +298,10 @@ def validate_manifest(m: dict) -> None:
         if not isinstance(sha, str) or len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha):
             raise ModelFormatError(f"files.{name}.sha256 invalid")
     if files["wiring.i32"]["byteLength"] != wiring_len:
-        raise ModelFormatError("wiring.i32 byteLength does not match L*C*2*4*4")
-    if files["gates.u8"]["byteLength"] != gates_len:
-        raise ModelFormatError("gates.u8 byteLength does not match L*C")
+        raise ModelFormatError("wiring.i32 byteLength does not match L*C*gateArity*4*4")
+    gates_name = file_names[1]
+    if files[gates_name]["byteLength"] != gates_len:
+        raise ModelFormatError(f"{gates_name} byteLength does not match L*C*gateWidth")
     heads_len = files["heads.f32"]["byteLength"]
     if wiring_len + gates_len + heads_len > MAX_PAYLOAD_BYTES:
         raise ModelFormatError("payload too large")

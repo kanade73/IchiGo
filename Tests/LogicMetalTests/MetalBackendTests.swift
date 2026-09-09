@@ -92,4 +92,19 @@ final class MetalBackendTests: XCTestCase {
         let second = try await metal.layerOutputs(features: c.features)
         XCTAssertEqual(first, second)
     }
+
+    func testLUT4IsRejectedByBothMetalBackends() throws {
+        let c = try ParityCase.load("tiny-9-lut4")
+        for make in [
+            { try MetalBackend(model: c.model) as any LogicBackend },
+            { try MetalPackedBackend(model: c.model) as any LogicBackend },
+        ] {
+            XCTAssertThrowsError(try make()) { error in
+                guard let e = error as? LogicModelError, case let .backendUnavailable(message) = e else {
+                    return XCTFail("expected .backendUnavailable, got \(error)")
+                }
+                XCTAssertTrue(message.contains("gate arity 4"))
+            }
+        }
+    }
 }

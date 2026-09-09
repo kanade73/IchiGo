@@ -24,6 +24,7 @@ DEFAULTS once it accepts these keys per the report's diff):
   bank1Ratio  wiring.ModelSpec.bank1_ratio (logic only); default 0.1. Ignored for cnn-baseline.
   wiringSeed  wiring.ModelSpec.wiring_seed (logic only); default None (falls back to cfg["seed"]).
               Ignored for cnn-baseline.
+  gateArity    2 (default) or experimental LUT4 arity 4 (logic only)
   headVersion model.LogicNet/baseline_cnn.BaselineCNN head_version; default model.HEAD_VERSION (2).
 """
 
@@ -47,7 +48,8 @@ def model_spec_from_config(cfg: dict) -> ModelSpec:
     channels = cfg.get("channels") or base["channels"]
     dilations = cfg.get("dilations") or base["dilations"]
     return ModelSpec.custom(channels=channels, dilations=list(dilations), seed=cfg["seed"], profile=profile,
-                            bank1_ratio=cfg.get("bank1Ratio", 0.1), wiring_seed=cfg.get("wiringSeed"))
+                            bank1_ratio=cfg.get("bank1Ratio", 0.1), wiring_seed=cfg.get("wiringSeed"),
+                            gate_arity=cfg.get("gateArity", 2))
 
 
 def build_model_from_config(cfg: dict):

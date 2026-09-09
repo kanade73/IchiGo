@@ -15,6 +15,7 @@ from ichigo_train.model_format import read_model  # noqa: E402
 ap = argparse.ArgumentParser()
 ap.add_argument("--model", required=True); ap.add_argument("--data", required=True); ap.add_argument("--split", default="validation")
 ap.add_argument("--count", type=int, default=8); ap.add_argument("--ichigo", default=".build/release/ichigo"); ap.add_argument("--out", default=None)
+ap.add_argument("--backend", choices=["cpu", "cpu-packed", "auto"], default="cpu")
 a = ap.parse_args()
 loaded = read_model(a.model)
 model = model_from_loaded(loaded)
@@ -33,7 +34,7 @@ with tempfile.TemporaryDirectory() as td:
     for b in range(arrays["spatial"].shape[0]):
         pos = os.path.join(td, f"p{b}.json")
         json.dump({"boardSize": S, "spatial": arrays["spatial"][b].reshape(-1).tolist(), "global": arrays["global"][b].tolist(), "legal": arrays["legal"][b].tolist()}, open(pos, "w"))
-        r = subprocess.run([a.ichigo, "eval", "--model", a.model, "--position", pos, "--backend", "cpu", "--dump-layers", os.path.join(td, f"l{b}.bin")], capture_output=True, text=True)
+        r = subprocess.run([a.ichigo, "eval", "--model", a.model, "--position", pos, "--backend", a.backend, "--dump-layers", os.path.join(td, f"l{b}.bin")], capture_output=True, text=True)
         if r.returncode != 0:
             print("ichigo eval failed", r.stderr); sys.exit(1)
         out = json.loads(r.stdout)

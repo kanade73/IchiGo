@@ -1,4 +1,4 @@
-"""16 two-input logic gates (docs/spec/01-network.md §2).
+"""Two-input gates and experimental four-input LUT gates (docs/spec/01-network.md §2–2b).
 
 Gate id ``g`` in 0..15 *is* the truth table: for inputs ``(a, b)`` the row index is
 ``i = 2*a + b`` and the output is ``(g >> i) & 1``. Therefore
@@ -12,6 +12,10 @@ The continuous relaxation for a, b in [0, 1] is
     y_soft = sum_g p_g * f_g(a, b) = sum_i t_i * q_i,   t_i = sum_g p_g * bit(g, i)
 
 Both forms are the same polynomial; the reduced ``[.., 4]`` form is what training uses.
+
+For the LUT4 path, ``phi[..., i]`` is an independent logit for table row ``i`` and
+``t[..., i] = sigmoid(phi[..., i] / tau)``. Rows use MSB-first input order, so the shared
+reduced evaluator builds ``q_i`` for ``i = sum_k a_k * 2**(n-1-k)``.
 """
 
 from __future__ import annotations
@@ -67,19 +71,85 @@ def reduce_theta(theta: torch.Tensor, tau: float) -> torch.Tensor:
     return p @ table
 
 
-def gate_entropy(theta: torch.Tensor, tau: float) -> torch.Tensor:
-    """Mean entropy of ``softmax(theta / tau)`` over all layer/channel gates."""
+def gate_entropy(theta: torch.Tensor, tau: float, gate_arity: int = 2) -> torch.Tensor:
+    """Mean gate entropy; arity 2 keeps softmax entropy, LUT4 uses Bernoulli entries."""
     if theta.numel() == 0:
         return theta.sum() * 0.0
+    if gate_arity == 4:
+        p = lut_probabilities(theta, tau)
+        return -(p * torch.log(p.clamp_min(1e-12)) + (1 - p) * torch.log((1 - p).clamp_min(1e-12))).mean()
+    if gate_arity != 2:
+        raise ValueError("gate_arity must be 2 or 4")
     p = gate_probabilities(theta, tau)
     return -(p * torch.log(p.clamp_min(1e-12))).sum(-1).mean()
 
 
-def gate_entropy_loss(theta: torch.Tensor, tau: float, weight: float) -> torch.Tensor:
+def gate_entropy_loss(theta: torch.Tensor, tau: float, weight: float, gate_arity: int = 2) -> torch.Tensor:
     """Weighted gate entropy regularizer; returns an attached zero when ``weight == 0``."""
     if weight == 0:
         return theta.sum() * 0.0
-    return torch.as_tensor(weight, dtype=theta.dtype, device=theta.device) * gate_entropy(theta, tau)
+    return torch.as_tensor(weight, dtype=theta.dtype, device=theta.device) * gate_entropy(theta, tau, gate_arity=gate_arity)
+
+
+def lut_probabilities(phi: torch.Tensor, tau: float) -> torch.Tensor:
+    """Independent LUT table probabilities ``t[..., i] = sigmoid(phi[..., i] / tau)``."""
+    if phi.shape[-1] != NUM_GATES:
+        raise ValueError(f"LUT logits last dim must be 16, got {tuple(phi.shape)}")
+    if tau <= 0:
+        raise ValueError("tau must be positive")
+    return torch.sigmoid(phi / tau)
+
+
+def _normalise_lut_inputs(inputs: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
+    if len(inputs) not in (2, 4):
+        raise ValueError(f"LUT input count must be 2 or 4, got {len(inputs)}")
+    return tuple(inputs)
+
+
+def lut_row_products(*inputs: torch.Tensor) -> torch.Tensor:
+    """Return ``q[..., i]`` for all MSB-first rows, with ``2**n`` final terms."""
+    inputs = _normalise_lut_inputs(tuple(inputs))
+    first = inputs[0]
+    one = torch.ones((), dtype=first.dtype, device=first.device)
+    rows = []
+    n = len(inputs)
+    for i in range(1 << n):
+        q = one
+        for k, a in enumerate(inputs):
+            q = q * (a if ((i >> (n - 1 - k)) & 1) else (one - a))
+        rows.append(q)
+    return torch.stack(rows, dim=-1)
+
+
+def soft_gate_lut_reduced(t: torch.Tensor, *inputs: torch.Tensor) -> torch.Tensor:
+    """Evaluate ``sum_i t_i * q_i`` for a 2- or 4-input LUT in MSB-first order."""
+    inputs = _normalise_lut_inputs(tuple(inputs))
+    expected = 1 << len(inputs)
+    if t.shape[-1] != expected:
+        raise ValueError(f"LUT table last dim must be {expected}, got {tuple(t.shape)}")
+    return (t * lut_row_products(*inputs)).sum(dim=-1)
+
+
+def soft_lut_direct(phi: torch.Tensor, tau: float, *inputs: torch.Tensor) -> torch.Tensor:
+    """Reference LUT expression, retaining all table entries before the row reduction."""
+    return (lut_probabilities(phi, tau) * lut_row_products(*inputs)).sum(dim=-1)
+
+
+def hard_lut(phi: torch.Tensor | np.ndarray) -> np.ndarray:
+    """Encode ``[phi_i > 0]`` as a uint16 table word, bit ``i`` = row ``i``."""
+    arr = phi.detach().cpu().numpy() if isinstance(phi, torch.Tensor) else np.asarray(phi)
+    if arr.shape[-1] != NUM_GATES:
+        raise ValueError("LUT logits last dim must be 16")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("LUT logits contain non-finite values")
+    bits = (arr > 0).astype(np.uint16)
+    weights = (np.uint16(1) << np.arange(NUM_GATES, dtype=np.uint16)).reshape((1,) * (arr.ndim - 1) + (NUM_GATES,))
+    return np.sum(bits * weights, axis=-1, dtype=np.uint16)
+
+
+lut4_soft_reduced = soft_gate_lut_reduced
+lut4_soft_direct = soft_lut_direct
+lut4_hard = hard_lut
 
 
 def soft_gate_reduced(t: torch.Tensor, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

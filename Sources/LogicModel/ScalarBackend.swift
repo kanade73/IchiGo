@@ -40,6 +40,8 @@ public struct ScalarBackend: LogicBackend {
             var out = [UInt8](repeating: 0, count: B * S * S * C)
             let layerWiring = model.wiring[l]
             let layerGates = model.gates[l]
+            let layerTables = model.gateTables[l]
+            let arity = model.manifest.gateArity
             features.spatial.withUnsafeBufferPointer { input in
                 prev.withUnsafeBufferPointer { prevBuf in
                     out.withUnsafeMutableBufferPointer { outBuf in
@@ -49,10 +51,19 @@ public struct ScalarBackend: LogicBackend {
                                     let outBase = ((b * S + y) * S + x) * C
                                     for c in 0 ..< C {
                                         let refs = layerWiring[c]
-                                        let a = read(refs[0], b, x, y, S, input, inputC, prevBuf, prevC)
-                                        let bb = read(refs[1], b, x, y, S, input, inputC, prevBuf, prevC)
-                                        let row = 2 * a + bb
-                                        outBuf[outBase + c] = (layerGates[c] >> row) & 1
+                                        if arity == 2 {
+                                            let a = read(refs[0], b, x, y, S, input, inputC, prevBuf, prevC)
+                                            let bb = read(refs[1], b, x, y, S, input, inputC, prevBuf, prevC)
+                                            let row = 2 * a + bb
+                                            outBuf[outBase + c] = (layerGates[c] >> row) & 1
+                                        } else {
+                                            var row = 0
+                                            for r in refs {
+                                                let bit = read(r, b, x, y, S, input, inputC, prevBuf, prevC)
+                                                row = row * 2 + Int(bit)
+                                            }
+                                            outBuf[outBase + c] = UInt8((layerTables[c] >> row) & 1)
+                                        }
                                     }
                                 }
                             }

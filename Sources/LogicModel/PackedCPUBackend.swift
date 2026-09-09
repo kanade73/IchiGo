@@ -55,6 +55,8 @@ public struct PackedCPUBackend: LogicBackend {
             var out = [UInt32](repeating: 0, count: G * S * S * C)
             let layerWiring = model.wiring[l]
             let layerGates = model.gates[l]
+            let layerTables = model.gateTables[l]
+            let arity = model.manifest.gateArity
             inputPacked.withUnsafeBufferPointer { input in
                 prev.withUnsafeBufferPointer { prevBuf in
                     out.withUnsafeMutableBufferPointer { outBuf in
@@ -65,15 +67,37 @@ public struct PackedCPUBackend: LogicBackend {
                                     let outBase = ((group * S + y) * S + x) * C
                                     for c in 0 ..< C {
                                         let refs = layerWiring[c]
-                                        let a = PackedCPUBackend.read(refs[0], group, x, y, S, input, inputC, prevBuf, prevC)
-                                        let b = PackedCPUBackend.read(refs[1], group, x, y, S, input, inputC, prevBuf, prevC)
-                                        let g = layerGates[c]
-                                        var bits: UInt32 = 0
-                                        if g & 1 != 0 { bits |= ~a & ~b }
-                                        if g & 2 != 0 { bits |= ~a & b }
-                                        if g & 4 != 0 { bits |= a & ~b }
-                                        if g & 8 != 0 { bits |= a & b }
-                                        outBuf[outBase + c] = bits & valid
+                                        if arity == 2 {
+                                            let a = PackedCPUBackend.read(refs[0], group, x, y, S, input, inputC, prevBuf, prevC)
+                                            let b = PackedCPUBackend.read(refs[1], group, x, y, S, input, inputC, prevBuf, prevC)
+                                            let g = layerGates[c]
+                                            var bits: UInt32 = 0
+                                            if g & 1 != 0 { bits |= ~a & ~b }
+                                            if g & 2 != 0 { bits |= ~a & b }
+                                            if g & 4 != 0 { bits |= a & ~b }
+                                            if g & 8 != 0 { bits |= a & b }
+                                            outBuf[outBase + c] = bits & valid
+                                        } else {
+                                            // LUT4 truth-table rows are MSB-first. Each row contributes
+                                            // an AND of either the input word or its complement; the
+                                            // OR of selected rows is then masked exactly as arity 2.
+                                            var inputs = [UInt32]()
+                                            inputs.reserveCapacity(arity)
+                                            for r in refs {
+                                                inputs.append(PackedCPUBackend.read(r, group, x, y, S, input, inputC, prevBuf, prevC))
+                                            }
+                                            let table = layerTables[c]
+                                            var bits: UInt32 = 0
+                                            for i in 0 ..< (1 << arity) where (table & (UInt16(1) << UInt16(i))) != 0 {
+                                                var term: UInt32 = 0xffffffff
+                                                for k in 0 ..< arity {
+                                                    let rowBit = (i >> (arity - 1 - k)) & 1
+                                                    term &= rowBit == 1 ? inputs[k] : ~inputs[k]
+                                                }
+                                                bits |= term
+                                            }
+                                            outBuf[outBase + c] = bits & valid
+                                        }
                                     }
                                 }
                             }

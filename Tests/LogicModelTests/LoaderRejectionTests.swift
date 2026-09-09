@@ -15,6 +15,11 @@ final class LoaderRejectionTests: XCTestCase {
         try? FileManager.default.removeItem(at: tmp)
     }
 
+    private func useFixture(_ name: String) throws {
+        try FileManager.default.removeItem(at: tmp)
+        try FileManager.default.copyItem(at: FixturePaths.parity(name).appendingPathComponent("model.ichigo"), to: tmp)
+    }
+
     private func mutateManifest(_ f: (inout [String: Any]) -> Void) throws {
         let url = tmp.appendingPathComponent("manifest.json")
         var m = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
@@ -173,5 +178,55 @@ final class LoaderRejectionTests: XCTestCase {
     func testSHA256KnownVector() {
         XCTAssertEqual(SHA256.hexDigest(Data()), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
         XCTAssertEqual(SHA256.hexDigest("abc".data(using: .utf8)!), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    }
+
+    func testLUT4LoadsU16AndFourReferences() throws {
+        try useFixture("tiny-9-lut4")
+        let m = try ModelLoader.load(directory: tmp)
+        XCTAssertEqual(m.manifest.gateArity, 4)
+        XCTAssertEqual(m.manifest.gateEncoding, "lut4-msb-first")
+        XCTAssertEqual(m.wiring[0][0].count, 4)
+        XCTAssertEqual(m.gateTables[0].count, 64)
+        XCTAssertGreaterThan(m.gateTables[0][0], 255)
+    }
+
+    func testLUT4RejectsU8GateManifest() throws {
+        try useFixture("tiny-9-lut4")
+        try mutateManifest { m in
+            var files = m["files"] as! [String: Any]
+            let u16 = files.removeValue(forKey: "gates.u16")!
+            files["gates.u8"] = u16
+            m["files"] = files
+        }
+        assertRejected("arity 4 with gates.u8")
+    }
+
+    func testLUT4RejectsMismatchedWiringShape() throws {
+        try useFixture("tiny-9-lut4")
+        try mutateManifest { m in
+            var files = m["files"] as! [String: Any]
+            var wiring = files["wiring.i32"] as! [String: Any]
+            wiring["byteLength"] = (wiring["byteLength"] as! Int) - 16
+            files["wiring.i32"] = wiring
+            m["files"] = files
+        }
+        assertRejected("arity 4 mismatched wiring shape")
+    }
+
+    func testLUT4RejectsDuplicateReferences() throws {
+        try useFixture("tiny-9-lut4")
+        let url = tmp.appendingPathComponent("wiring.i32")
+        var d = try Data(contentsOf: url)
+        for i in 0 ..< 16 { d[16 + i] = d[i] }
+        try d.write(to: url)
+        let sha = SHA256.hexDigest(d)
+        try mutateManifest { m in
+            var files = m["files"] as! [String: Any]
+            var wiring = files["wiring.i32"] as! [String: Any]
+            wiring["sha256"] = sha
+            files["wiring.i32"] = wiring
+            m["files"] = files
+        }
+        assertRejected("arity 4 duplicate references")
     }
 }

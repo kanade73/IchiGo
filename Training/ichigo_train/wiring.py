@@ -1,4 +1,4 @@
-"""Fixed wiring generation and gate-logit initialisation (docs/spec/01-network.md §3).
+"""Fixed wiring generation and gate-logit initialisation (docs/spec/01-network.md §3, §2b).
 
 Wiring shape ``[L, C, 2, 4] int32`` with the last axis ``(bank, channel, dx, dy)``:
   bank 0 = previous layer (layer 0: the 32 input channels), bank 1 = the 32 input channels
@@ -50,32 +50,34 @@ class ModelSpec:
     profile: str | None = None
     bank1_ratio: float = 0.1
     wiring_seed: int | None = None
+    gate_arity: int = 2
 
     @property
     def layers(self) -> int:
         return len(self.dilations)
 
     @staticmethod
-    def from_profile(name: str, seed: int = DEFAULT_SEED) -> "ModelSpec":
+    def from_profile(name: str, seed: int = DEFAULT_SEED, gate_arity: int = 2) -> "ModelSpec":
         if name not in PROFILES:
             raise ValueError(f"unknown profile {name!r}; expected one of {sorted(PROFILES)}")
         p = PROFILES[name]
-        return ModelSpec(channels=p["channels"], dilations=list(p["dilations"]), seed=seed, profile=name)
+        return ModelSpec(channels=p["channels"], dilations=list(p["dilations"]), seed=seed, profile=name,
+                         gate_arity=gate_arity)
 
     @classmethod
     def custom(cls, channels: int, dilations: list[int], seed: int = DEFAULT_SEED, profile: str | None = None,
-               bank1_ratio: float = 0.1, wiring_seed: int | None = None) -> "ModelSpec":
+               bank1_ratio: float = 0.1, wiring_seed: int | None = None, gate_arity: int = 2) -> "ModelSpec":
         """Build a spec with an arbitrary channel/dilation schedule (T33 capacity experiments:
         wide/local variants of a profile, wiring-seed sweeps, bank-1 ratio sweeps). ``profile`` is
         purely a record of which named profile (if any) this was derived from -- it does not
         constrain ``channels``/``dilations``."""
         return cls(channels=channels, dilations=list(dilations), seed=seed, profile=profile,
-                   bank1_ratio=bank1_ratio, wiring_seed=wiring_seed)
+                   bank1_ratio=bank1_ratio, wiring_seed=wiring_seed, gate_arity=gate_arity)
 
 
 @dataclass
 class Wiring:
-    """``wiring`` int32 [L,C,2,4]; ``theta`` float32 [L,C,16] initial logits."""
+    """``wiring`` int32 [L,C,n,4]; ``theta``/``phi`` float32 [L,C,16] initial logits."""
 
     wiring: np.ndarray
     theta: np.ndarray
@@ -88,6 +90,11 @@ class Wiring:
     @property
     def channels(self) -> int:
         return self.wiring.shape[1]
+
+    @property
+    def phi(self) -> np.ndarray:
+        """Alias used by the arity-4 LUT path; arity-2 callers retain ``theta``."""
+        return self.theta
 
 
 @dataclass
@@ -138,29 +145,35 @@ def _draw_reference(rng: np.random.Generator, layer: int, channels: int, d: int,
 
 
 def generate_wiring(spec: ModelSpec) -> Wiring:
+    if spec.gate_arity not in (2, 4):
+        raise ValueError("gate_arity must be 2 or 4")
     seed = spec.wiring_seed if spec.wiring_seed is not None else spec.seed
     rng = np.random.Generator(np.random.PCG64(seed))
     L, C = spec.layers, spec.channels
-    wiring = np.zeros((L, C, 2, 4), dtype=np.int32)
+    arity = spec.gate_arity
+    wiring = np.zeros((L, C, arity, 4), dtype=np.int32)
     for l in range(L):
         d = spec.dilations[l]
         for c in range(C):
-            if l == 0:
-                a = (0, c % INPUT_CHANNELS, 0, 0)
-            elif c % 4 == 0:
-                a = (0, c, 0, 0)
-            else:
-                a = _draw_reference(rng, l, C, d, spec.bank1_ratio)
-            b = _draw_reference(rng, l, C, d, spec.bank1_ratio)
-            while b == a:
-                b = _draw_reference(rng, l, C, d, spec.bank1_ratio)
-            wiring[l, c, 0] = a
-            wiring[l, c, 1] = b
+            for k in range(arity):
+                if k == 0 and l == 0:
+                    ref = (0, c % INPUT_CHANNELS, 0, 0)
+                elif k == 0 and c % 4 == 0:
+                    ref = (0, c, 0, 0)
+                else:
+                    ref = _draw_reference(rng, l, C, d, spec.bank1_ratio)
+                while any(np.array_equal(ref, wiring[l, c, prev]) for prev in range(k)):
+                    ref = _draw_reference(rng, l, C, d, spec.bank1_ratio)
+                wiring[l, c, k] = ref
     theta = np.zeros((L, C, 16), dtype=np.float32)
     for l in range(L):
         for c in range(C):
-            if c % 4 == 0:
+            if c % 4 == 0 and arity == 2:
                 theta[l, c, IDENTITY_GATE] = IDENTITY_THETA
+            elif c % 4 == 0:
+                # a_1 is the MSB, so rows 8..15 are the rows where the identity table is 1.
+                theta[l, c, 8:] = IDENTITY_THETA
+                theta[l, c, :8] = -IDENTITY_THETA
             else:
                 theta[l, c, :] = rng.normal(0.0, THETA_STD, size=16).astype(np.float32)
     return Wiring(wiring=wiring, theta=theta, dilations=list(spec.dilations))
@@ -175,6 +188,8 @@ def generate_wiring_candidates(spec: ModelSpec, candidates: int) -> WiringCandid
     """
     if not isinstance(candidates, int) or candidates <= 0:
         raise ValueError("candidates must be a positive integer")
+    if spec.gate_arity != 2:
+        raise ValueError("learned-k wiring is supported only for gate_arity=2")
     base = generate_wiring(spec)
     if candidates == 1:
         return WiringCandidates(
@@ -213,10 +228,12 @@ def generate_wiring_candidates(spec: ModelSpec, candidates: int) -> WiringCandid
     return WiringCandidates(candidates=table, theta=theta, dilations=list(spec.dilations))
 
 
-def validate_wiring(wiring: np.ndarray, dilations: list[int]) -> None:
+def validate_wiring(wiring: np.ndarray, dilations: list[int], gate_arity: int = 2) -> None:
     """Structural checks shared with the Swift loader. Raises ValueError."""
-    if wiring.ndim != 4 or wiring.shape[2] != 2 or wiring.shape[3] != 4:
-        raise ValueError(f"wiring must be [L,C,2,4], got {wiring.shape}")
+    if gate_arity not in (2, 4):
+        raise ValueError("gate_arity must be 2 or 4")
+    if wiring.ndim != 4 or wiring.shape[2] != gate_arity or wiring.shape[3] != 4:
+        raise ValueError(f"wiring must be [L,C,{gate_arity},4], got {wiring.shape}")
     L, C = wiring.shape[:2]
     if L != len(dilations):
         raise ValueError("dilation count must equal layer count")
@@ -224,7 +241,7 @@ def validate_wiring(wiring: np.ndarray, dilations: list[int]) -> None:
         d = dilations[l]
         for c in range(C):
             refs = []
-            for k in range(2):
+            for k in range(gate_arity):
                 bank, ch, dx, dy = (int(v) for v in wiring[l, c, k])
                 if bank not in (0, 1) or (bank == 1 and l == 0):
                     raise ValueError(f"layer {l} channel {c}: invalid bank {bank}")
@@ -233,5 +250,5 @@ def validate_wiring(wiring: np.ndarray, dilations: list[int]) -> None:
                 if dx not in (-d, 0, d) or dy not in (-d, 0, d):
                     raise ValueError(f"layer {l} channel {c}: offset ({dx},{dy}) not in dilation {d}")
                 refs.append((bank, ch, dx, dy))
-            if refs[0] == refs[1]:
-                raise ValueError(f"layer {l} channel {c}: A == B")
+            if len(set(refs)) != gate_arity:
+                raise ValueError(f"layer {l} channel {c}: gate references must be distinct")

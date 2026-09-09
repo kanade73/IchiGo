@@ -3,7 +3,7 @@ import Foundation
 /// A single gate input reference: `(bank, channel, dx, dy)`.
 /// bank 0 = previous layer output (layer 0: the 32 input channels); bank 1 = the 32 input
 /// channels (layers ≥ 1 only). The input point is `(x+dx, y+dy)`; off-board reads 0.
-public struct GateReference: Sendable, Equatable {
+public struct GateReference: Sendable, Equatable, Hashable {
     public let bank: Int32
     public let channel: Int32
     public let dx: Int32
@@ -17,16 +17,29 @@ public struct LogicModelData: Sendable {
     public let channels: Int
     public let layers: Int
     public let dilations: [Int]
-    /// `[L][C][2]` references.
+    /// `[L][C][n]` references, where n is `manifest.gateArity`.
     public let wiring: [[[GateReference]]]
-    /// `[L][C]` gate ids 0...15 (truth-table encoding: output = (g >> (2a+b)) & 1).
+    /// Legacy arity-2 gate IDs. LUT4 table words are kept in `gateTables`.
     public let gates: [[UInt8]]
+    /// `[L][C]` table words. Arity 2 values are the same 0...15 IDs; arity 4 values are uint16
+    /// truth tables with bit i equal to row i.
+    public let gateTables: [[UInt16]]
     /// Head tensors by name, row-major float32 (`W` is `[in,out]`, `b` is `[out]`).
     public let heads: [String: [Float]]
     /// sha256 of the three payload files concatenated with their names (stable model identity).
     public let payloadHash: String
 
     public func head(_ name: String) -> [Float] { heads[name]! }
+
+    public init(
+        manifest: ModelManifest, channels: Int, layers: Int, dilations: [Int], wiring: [[[GateReference]]],
+        gates: [[UInt8]], heads: [String: [Float]], payloadHash: String, gateTables: [[UInt16]]? = nil
+    ) {
+        self.manifest = manifest; self.channels = channels; self.layers = layers; self.dilations = dilations
+        self.wiring = wiring; self.gates = gates
+        self.gateTables = gateTables ?? gates.map { $0.map(UInt16.init) }
+        self.heads = heads; self.payloadHash = payloadHash
+    }
 }
 
 public enum ModelLoader {
@@ -46,7 +59,8 @@ public enum ModelLoader {
         let manifest = try ModelManifest.parse(data: manifestData)
 
         var payloads: [String: Data] = [:]
-        for name in ModelManifest.fileNames {
+        let fileNames = ModelManifest.fileNames(for: manifest.gateArity)
+        for name in fileNames {
             let entry = manifest.files[name]!
             let data = try readRegularFile(directory, name)
             guard data.count == entry.byteLength else {
@@ -67,14 +81,15 @@ public enum ModelLoader {
         }
         var wiring: [[[GateReference]]] = []
         wiring.reserveCapacity(L)
+        let arity = manifest.gateArity
         for l in 0 ..< L {
             let d = Int32(manifest.dilations[l])
             var layer: [[GateReference]] = []
             layer.reserveCapacity(C)
             for c in 0 ..< C {
                 var refs: [GateReference] = []
-                for k in 0 ..< 2 {
-                    let base = ((l * C + c) * 2 + k) * 4
+                for k in 0 ..< arity {
+                    let base = ((l * C + c) * arity + k) * 4
                     let r = GateReference(bank: wiringRaw[base], channel: wiringRaw[base + 1], dx: wiringRaw[base + 2], dy: wiringRaw[base + 3])
                     guard r.bank == 0 || (r.bank == 1 && l > 0) else {
                         throw LogicModelError.invalidPayload("layer \(l) channel \(c): invalid bank \(r.bank)")
@@ -88,19 +103,28 @@ public enum ModelLoader {
                     }
                     refs.append(r)
                 }
-                guard refs[0] != refs[1] else { throw LogicModelError.invalidPayload("layer \(l) channel \(c): A == B") }
+                guard Set(refs).count == arity else { throw LogicModelError.invalidPayload("layer \(l) channel \(c): gate references must be distinct") }
                 layer.append(refs)
             }
             wiring.append(layer)
         }
-        let gatesRaw = [UInt8](payloads["gates.u8"]!)
+        let gatesRaw = payloads[fileNames[1]]!
         var gates: [[UInt8]] = []
+        var gateTables: [[UInt16]] = []
         for l in 0 ..< L {
-            let row = Array(gatesRaw[(l * C) ..< ((l + 1) * C)])
-            if let bad = row.first(where: { $0 > 15 }) {
+            let tableRow: [UInt16]
+            if arity == 4 {
+                tableRow = gatesRaw.withUnsafeBytes { buf in
+                    (0 ..< C).map { UInt16(littleEndian: buf.loadUnaligned(fromByteOffset: (l * C + $0) * 2, as: UInt16.self)) }
+                }
+            } else {
+                tableRow = Array(gatesRaw[(l * C) ..< ((l + 1) * C)]).map(UInt16.init)
+            }
+            if arity == 2, let bad = tableRow.first(where: { $0 > 15 }) {
                 throw LogicModelError.invalidPayload("layer \(l): gate id \(bad) > 15")
             }
-            gates.append(row)
+            gates.append(tableRow.map { UInt8(truncatingIfNeeded: $0) })
+            gateTables.append(tableRow)
         }
         let headsData = payloads["heads.f32"]!
         var heads: [String: [Float]] = [:]
@@ -116,13 +140,13 @@ public enum ModelLoader {
             heads[t.name] = values
         }
         var hashInput = Data()
-        for name in ModelManifest.fileNames {
+        for name in fileNames {
             hashInput.append(name.data(using: .utf8)!)
             hashInput.append(payloads[name]!)
         }
         return LogicModelData(
             manifest: manifest, channels: C, layers: L, dilations: manifest.dilations, wiring: wiring, gates: gates,
-            heads: heads, payloadHash: SHA256.hexDigest(hashInput)
+            heads: heads, payloadHash: SHA256.hexDigest(hashInput), gateTables: gateTables
         )
     }
 

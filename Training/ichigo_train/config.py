@@ -37,6 +37,7 @@ DEFAULTS = {
 DEFAULTS.update({
     # T33 capacity/wiring/CNN-baseline experiment keys
     "modelType": "logic", "channels": None, "dilations": None, "bank1Ratio": 0.1, "wiringSeed": None, "headVersion": 2,
+    "gateArity": 2,
 })
 REQUIRED = ["data", "out", "boardSize", "runId"]
 KNOWN = set(DEFAULTS) | set(REQUIRED)
@@ -70,6 +71,10 @@ def load_config(path: str) -> tuple[dict, dict]:
         raise ConfigError("precision must be fp32 (v1)")
     if cfg["discretization"] not in ("prefix-60-30-10", "gumbel-ste-90-10"):
         raise ConfigError("discretization must be prefix-60-30-10 or gumbel-ste-90-10")
+    if not isinstance(cfg["gateArity"], int) or isinstance(cfg["gateArity"], bool) or cfg["gateArity"] not in (2, 4):
+        raise ConfigError("gateArity must be 2 or 4")
+    if cfg["gateArity"] == 4 and cfg["discretization"] == "gumbel-ste-90-10":
+        raise ConfigError("gumbel-ste-90-10 is not supported for gateArity=4")
     if cfg["augmentation"] not in ("d4", "none"):
         raise ConfigError("augmentation must be d4 or none")
     if cfg["boardSize"] not in (9, 19):

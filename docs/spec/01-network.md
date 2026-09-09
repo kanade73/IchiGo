@@ -54,18 +54,47 @@ y_hard=bit(g_hard, 2*a+b)  // a,b が離散の場合
 
 全16関数を各点ごとに `[B,S,S,C,16]` として保存しない。`t_i=Σ_g p_g*bit(g,i)` を `[C,4]` に先に縮約し `Σ_i t_i*q_i` を計算する。同じ多項式であり、浮動小数点誤差以外は等価。学習は FP32、まず自動微分で実装する。
 
+## 2b 多入力 LUT ゲート（実験）
+
+2入力ゲートの深い木では多入力関数の表現に不利なため、実験用に arity `n ∈ {2,4}` の
+lookup-table (LUT) ゲートを定義する。各ゲートは `2^n` 個の表エントリを持ち、入力を
+`a_1,...,a_n` とする。行番号は
+
+```text
+i = Σ[k=1..n] a_k * 2^(n-k)
+```
+
+であり、`a_1` が最上位ビットである。従って `n=2` では既存の `i=2a+b` と完全に同じ
+順序になる。
+
+新しい arity 4 経路では、各表エントリに独立な logit `phi_i` を持ち、連続緩和は
+
+```text
+t_i = sigmoid(phi_i / tau)
+q_i = Π[k=1..n] (a_k if bit_k(i) else 1-a_k)
+y_soft = Σ[i=0..2^n-1] t_i * q_i
+```
+
+とする。hard 経路は `table_i = [phi_i > 0]`、`output=table[i(a)]` である。評価の
+`Σ_i t_i q_i` は `2^n` 項を使う共通実装とする。
+
+既存 arity 2 の学習経路は変更しない。すなわち `theta [L,C,16]` に
+`p=softmax(theta/tau)` を適用して `t [C,4]` に縮約し、既存の4項多項式を評価する。
+arity 4 のみ `phi [L,C,16] -> t [C,16]` の LUT 経路を使う。Gumbel-STE は arity 4
+では使用しない。
+
 ## 3. 空間共有論理層
 
-各層の出力は `[B,S,S,C]`。各出力 channel c は2個の入力参照 A/B と16 logitsを持ち、位置 (x,y) 間で共有する。参照は `(bank,channel,dx,dy)`。
+各層の出力は `[B,S,S,C]`。各出力 channel c は arity 個の入力参照と16 logitsを持ち、位置 (x,y) 間で共有する。参照は `(bank,channel,dx,dy)`。
 
 - bank=0: 直前の層（第0層では元入力32ch）。bank=1: 元入力32ch（第1層以降だけ許可）。
 - 入力点は `(x+dx,y+dy)`。盤外は0。ラップアラウンド禁止。
 - 第 l 層の offset 候補は `dx,dy ∈ {-d_l,0,d_l}`。
 - 配線は学習中固定。保存ファイルに実体を記録し、Swift 側で乱数から再生成しない。
-- 第0層: 各 c の A は `(0,c%32,0,0)`、B はランダムな bank=0 参照。
+- 第0層: 各 c の第1参照は `(0,c%32,0,0)`、残りの参照はランダムな bank=0 参照。
 - 第1層以降: c%4=0 の A は `(0,c,0,0)`。残りの A と全 B は、90% bank=0 / 10% bank=1 で channel と offset を一様に選ぶ。
-- A=B のとき B を再抽選。モデル生成乱数は NumPy PCG64、初期 seed=20260908。配線ファイルが再現性の正本。
-- 全層の c%4=0 は `theta[12]=3, 他=0`、残りは Normal(0,0.05)。恒等ゲートへの初期バイアスとし、固定配線スキップとは呼ばない。
+- 参照は arity 個すべて相互に異なる。モデル生成乱数は NumPy PCG64、初期 seed=20260908。配線ファイルが再現性の正本。
+- 全層の c%4=0 は arity 2 では `theta[12]=3, 他=0`、arity 4 では第1入力を出力するよう `phi_i=+3/-3` とし、残りは Normal(0,0.05)。恒等ゲートへの初期バイアスとし、固定配線スキップとは呼ばない。
 
 | profile | C | L | d_l |
 |---|---:|---:|---|
@@ -122,7 +151,7 @@ out &= valid
 
 シフト32は禁止。B=32のmaskは全bit1。g=15・NOT にも末尾maskを適用する。各層は別 dispatch、同一 command buffer に順に encode し、各層で CPU 同期待機しない。まず完了時に結果を読み戻しCPUヘッド、次にヘッドもMetal化。前後バッファを同時上書きしない。Swift/Metal間の descriptor は素の構造体レイアウトに頼らず Int32/UInt32 配列で受け渡す。
 
-Metal device がなければ `--backend metal` は明示エラー、`auto` はCPU。GPUエラー時に途中結果を返さず要求全体を失敗させる。CPU fallback は次要求から行う設定とし、時間制限中の無制限再試行は禁止。
+Metal device がなければ `--backend metal` は明示エラー、`auto` はCPU。Metal は arity 4 を実装せず、arity 4 モデルでは `LogicModelError.backendUnavailable` を返す。CLI の `--backend auto` は arity 4 では `cpu-packed`（必要なら `cpu`）を選ぶ。GPUエラー時に途中結果を返さず要求全体を失敗させる。CPU fallback は次要求から行う設定とし、時間制限中の無制限再試行は禁止。
 
 B=1では32bitの31bitが遊ぶため高速化は保証しない。CPU、Metal-byte、Metal-packed を B=1,2,4,8,16,32,64 で測定し、auto の閾値を端末別プロファイルに保存。モデルごとの符号化定数化・ゲート融合は parity 後の別チケット。
 
@@ -143,7 +172,7 @@ manifest の必須項目:
 ```json
 {
   "format":"ichigo.logic", "version":1,
-  "featureVersion":1, "headVersion":2,
+  "featureVersion":1, "headVersion":2, "gateArity":2,
   "boardSizes":[9], "rulesId":"cgos-area-psk-v1",
   "channels":256, "layers":8,
   "dilations":[1,1,2,1,4,1,8,1],
@@ -158,7 +187,13 @@ manifest の必須項目:
 
 上記はフィールド説明例。実際のfiles等が空なら無効。filesは3ファイルそれぞれ `{byteLength,sha256}`。headTensorsは各テンソルに `{name,shape,byteOffset,byteLength}`。必須14 tensors は Wlocal,blocal,Wpolicy,bpolicy,Wowner,bowner,Wglobal,bglobal,Wpass,bpass,Wwdl,bwdl,Wscore,bscore。重複・欠落・重なり・不整合を拒否。heads末尾の余分なbyteも拒否。
 
-wiring は `[L,C,2,4] int32`、末尾が bank/channel/dx/dy。gates は `[L,C] uint8`。構造チェックは bank範囲、channel範囲、offset候補、g≤15、d数=Lまで。C 16〜4096、L 1〜64、d 1〜19、payload合計512MiB以下を初期上限にする。範囲外は警告付き読み込みではなくエラー。byte計算は overflow 検査を先に行う。
+arity 2 の wiring は `[L,C,2,4] int32`、gates は `[L,C] uint8` である。arity 4 は
+manifest に `gateArity:4` と `gateEncoding:"lut4-msb-first"` を記録し、wiring は
+`[L,C,4,4] int32`、gates は little-endian の `[L,C] uint16` を `gates.u16` に保存する。
+`gates.u8` と `gates.u16` の取り違え、未知の gateEncoding、または encoding と arity の
+組み合わせ違いは拒否する。構造チェックは bank範囲、channel範囲、offset候補、全参照の
+相互非同一、d数=Lまで行う。C 16〜4096、L 1〜64、d 1〜19、payload合計512MiB以下を
+初期上限にする。範囲外は警告付き読み込みではなくエラー。byte計算は overflow 検査を先に行う。
 
 各ファイルサイズ・hash検証後にloadする。未知version・ルール・featureを拒否。JSONの NaN/Infinity、パスの絶対指定・`..`・symlink は拒否。ファイル名は上記3種固定。headTensorsは4byte alignment。
 

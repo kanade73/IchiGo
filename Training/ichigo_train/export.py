@@ -24,7 +24,8 @@ def save_checkpoint(model: LogicNet, path: str, extra: dict | None = None) -> No
     extend this dict; Swift never reads it."""
     torch.save({
         "schemaVersion": 1,
-        "spec": {"channels": model.spec.channels, "dilations": model.spec.dilations, "seed": model.spec.seed, "profile": model.spec.profile},
+        "spec": {"channels": model.spec.channels, "dilations": model.spec.dilations, "seed": model.spec.seed, "profile": model.spec.profile,
+                 "gate_arity": model.spec.gate_arity},
         "headVersion": model.head_version,
         "wiring": model.wiring_numpy(),
         "theta": model.theta.detach().cpu().numpy(),
@@ -96,7 +97,8 @@ def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: 
     temperature, calib_prov = _calibration_provenance(calibration)
     prov["calibration"] = calib_prov
     files = MF.serialize_model(model.wiring_numpy(), model.hard_gates(), model.head_numpy(), model.dilations, board_sizes, prov,
-                               calibration_temperature=temperature, head_version=model.head_version)
+                               calibration_temperature=temperature, head_version=model.head_version,
+                               gate_arity=model.gate_arity)
     parent = os.path.dirname(out) or "."
     os.makedirs(parent, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix=".export-", dir=parent)
@@ -138,10 +140,15 @@ def model_from_loaded(loaded: MF.LoadedModel) -> LogicNet:
     Sets a ``calibration_temperature`` attribute (docs/spec/03-engine.md §9) from the manifest,
     for evaluate paths that read a loaded ``.ichigo`` model to pass into ``model.postprocess``."""
     m = loaded.manifest
-    spec = ModelSpec(channels=m["channels"], dilations=list(m["dilations"]), seed=0)
+    gate_arity = int(m.get("gateArity", 2))
+    spec = ModelSpec(channels=m["channels"], dilations=list(m["dilations"]), seed=0, gate_arity=gate_arity)
     L, C = loaded.gates.shape
-    theta = np.zeros((L, C, 16), dtype=np.float32)
-    theta[np.arange(L)[:, None], np.arange(C)[None, :], loaded.gates.astype(np.int64)] = 3.0
+    if gate_arity == 4:
+        rows = np.arange(16, dtype=np.uint16).reshape(1, 1, 16)
+        theta = np.where(((loaded.gates[:, :, None] >> rows) & 1) != 0, 3.0, -3.0).astype(np.float32)
+    else:
+        theta = np.zeros((L, C, 16), dtype=np.float32)
+        theta[np.arange(L)[:, None], np.arange(C)[None, :], loaded.gates.astype(np.int64)] = 3.0
     model = LogicNet(spec, Wiring(wiring=loaded.wiring, theta=theta, dilations=spec.dilations), heads=loaded.heads, head_version=int(m["headVersion"]))
     model.calibration_temperature = float(m.get("calibrationTemperature", 1.0))
     return model

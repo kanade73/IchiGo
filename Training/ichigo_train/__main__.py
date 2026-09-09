@@ -150,6 +150,8 @@ def cmd_make_fixtures(args) -> int:
     write_parity_case(os.path.join(args.out, "parity"), "tiny-9-headv1", 9, 2, 20260910, head_version=1)
     write_parity_case(os.path.join(args.out, "parity"), "tiny-9-headv3", 9, 3, 20260911, head_version=3)
     write_parity_case(os.path.join(args.out, "parity"), "tiny-19-headv3", 19, 2, 20260912, head_version=3)
+    write_parity_case(os.path.join(args.out, "parity"), "tiny-9-lut4", 9, 4, 20260913, gate_arity=4)
+    write_parity_case(os.path.join(args.out, "parity"), "tiny-19-lut4", 19, 2, 20260914, gate_arity=4)
     os.makedirs(os.path.join(args.out, "symmetry"), exist_ok=True)
     for s in (9, 19):
         write_permutation_table(s, os.path.join(args.out, "symmetry", f"perm-{s}.json"))

@@ -31,6 +31,9 @@ public final class MetalBackend: LogicBackend, @unchecked Sendable {
     public var deviceName: String { device.name }
 
     public init(model: LogicModelData) throws {
+        guard model.manifest.gateArity == 2 else {
+            throw LogicModelError.backendUnavailable("Metal byte backend does not support gate arity \(model.manifest.gateArity); use cpu-packed or cpu")
+        }
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw LogicModelError.backendUnavailable("no Metal device on this host")
         }

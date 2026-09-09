@@ -27,6 +27,7 @@
     }
   },
   "format": "ichigo.logic",
+  "gateArity": 2,
   "gateEncoding": "truth-table-lsb-2a-plus-b",
   "headTensors": [
     {

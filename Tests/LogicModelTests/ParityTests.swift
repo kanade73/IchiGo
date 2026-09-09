@@ -24,6 +24,17 @@ final class ParityTests: XCTestCase {
         XCTAssertEqual(c.model.manifest.headVersion, 3)
         try runCase("tiny-19-headv3")
     }
+    func testTiny9LUT4() throws {
+        let c = try ParityCase.load("tiny-9-lut4")
+        XCTAssertEqual(c.model.manifest.gateArity, 4)
+        XCTAssertEqual(c.model.manifest.gateEncoding, "lut4-msb-first")
+        try runCase("tiny-9-lut4")
+    }
+    func testTiny19LUT4() throws {
+        let c = try ParityCase.load("tiny-19-lut4")
+        XCTAssertEqual(c.model.manifest.gateArity, 4)
+        try runCase("tiny-19-lut4")
+    }
 
     private func runCase(_ name: String) throws {
         let c = try ParityCase.load(name)

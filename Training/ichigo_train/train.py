@@ -287,7 +287,7 @@ class Trainer:
                 # outside the DDP-tracked forward -- would fire theta's real gradient-ready hook a
                 # second time in the same backward pass, which is exactly DDP's "Expected to mark a
                 # variable ready only once" check.
-                gate_entropy = G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"])
+                gate_entropy = G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"], gate_arity=getattr(model, "gate_arity", 2))
                 loss = loss + gate_entropy / self.accum
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite loss at step {self.step}")
@@ -301,7 +301,7 @@ class Trainer:
         tvec = torch.tensor([totals[k] for k in totals], dtype=torch.float64, device=self.device)
         D.all_reduce_sum(tvec)
         totals = {k: v / self.world_size for k, v in zip(totals, tvec.tolist())}
-        entropy_value = float(G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"]).detach().item())
+        entropy_value = float(G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"], gate_arity=getattr(model, "gate_arity", 2)).detach().item())
         totals["gateEntropyLoss"] = entropy_value
         totals["total"] += entropy_value
 
@@ -348,7 +348,7 @@ class Trainer:
             stats = gate_statistics(self.model, sample)
             rec = {"step": self.step, "tau": st.tau, "frozenPrefix": st.frozen_prefix, "headsOnly": st.heads_only, "stage": st.stage,
                    "soft": soft, "hard": hard, "softHardPolicyCEDiff": hard["policy"] - soft["policy"], "gates": stats, "tag": tag,
-                   "gateEntropyLoss": float(G.gate_entropy_loss(self.model.theta, st.tau, self.cfg["gateEntropyWeight"]).item()),
+                   "gateEntropyLoss": float(G.gate_entropy_loss(self.model.theta, st.tau, self.cfg["gateEntropyWeight"], gate_arity=getattr(self.model, "gate_arity", 2)).item()),
                    "elapsedSeconds": time.monotonic() - self.t_start}
             write_json(os.path.join(self.out, "validation", f"step-{self.step:07d}{('-' + tag) if tag else ''}.json"), rec)
             for mode, r in (("soft", soft), ("hard", hard)):

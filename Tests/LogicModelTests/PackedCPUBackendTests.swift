@@ -28,6 +28,8 @@ final class PackedCPUBackendTests: XCTestCase {
     func testBatchSweepMatchesScalarBackendHeadV1() throws { try runSweep("tiny-9-headv1") }
     func testBatchSweepMatchesScalarBackendHeadV3Tiny9() throws { try runSweep("tiny-9-headv3") }
     func testBatchSweepMatchesScalarBackendHeadV3Tiny19() throws { try runSweep("tiny-19-headv3") }
+    func testBatchSweepMatchesScalarBackendLUT4Tiny9() throws { try runSweep("tiny-9-lut4") }
+    func testBatchSweepMatchesScalarBackendLUT4Tiny19() throws { try runSweep("tiny-19-lut4") }
 
     private func runSweep(_ fixture: String) throws {
         let c = try ParityCase.load(fixture)

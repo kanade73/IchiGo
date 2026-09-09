@@ -6,6 +6,7 @@
   "seed": 20260912,
   "profile": "tiny",
   "headVersion": 3,
+  "gateArity": 2,
   "spatialFile": "spatial.u8",
   "globalFile": "global.f32",
   "legalFile": "legal.u8",

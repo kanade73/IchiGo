@@ -21,7 +21,9 @@ public struct ModelManifest: Sendable, Equatable {
     public static let supportedHeadVersions: Set<Int> = [1, 2, 3]
     public static let rulesID = "cgos-area-psk-v1"
     public static let gateEncoding = "truth-table-lsb-2a-plus-b"
+    public static let lut4GateEncoding = "lut4-msb-first"
     public static let fileNames = ["wiring.i32", "gates.u8", "heads.f32"]
+    public static let lut4FileNames = ["wiring.i32", "gates.u16", "heads.f32"]
     public static let supportedBoardSizes: Set<Int> = [9, 19]
     public static let channelRange = 16 ... 4096
     public static let layerRange = 1 ... 64
@@ -40,6 +42,8 @@ public struct ModelManifest: Sendable, Equatable {
     public static let regionHidden = regionCount * localHidden
 
     public let headVersion: Int
+    public let gateArity: Int
+    public let gateEncoding: String
     public let boardSizes: [Int]
     public let channels: Int
     public let layers: Int
@@ -52,8 +56,24 @@ public struct ModelManifest: Sendable, Equatable {
     /// Original manifest JSON text (for `inspect`).
     public let rawJSON: String
 
+    public init(
+        headVersion: Int, boardSizes: [Int], channels: Int, layers: Int, dilations: [Int], calibrationTemperature: Float,
+        files: [String: FileEntry], headTensors: [HeadTensor], trainingProvenanceJSON: String, rawJSON: String,
+        gateArity: Int = 2, gateEncoding: String = ModelManifest.gateEncoding
+    ) {
+        self.headVersion = headVersion; self.gateArity = gateArity; self.gateEncoding = gateEncoding
+        self.boardSizes = boardSizes; self.channels = channels; self.layers = layers; self.dilations = dilations
+        self.calibrationTemperature = calibrationTemperature; self.files = files; self.headTensors = headTensors
+        self.trainingProvenanceJSON = trainingProvenanceJSON; self.rawJSON = rawJSON
+    }
+
+    public static func fileNames(for gateArity: Int) -> [String] {
+        gateArity == 4 ? lut4FileNames : fileNames
+    }
+
     public static func == (a: ModelManifest, b: ModelManifest) -> Bool {
         a.boardSizes == b.boardSizes && a.channels == b.channels && a.dilations == b.dilations
+            && a.gateArity == b.gateArity && a.gateEncoding == b.gateEncoding
             && a.files == b.files && a.headTensors == b.headTensors
     }
 
@@ -116,7 +136,18 @@ public struct ModelManifest: Sendable, Equatable {
         let headVersion = try int("headVersion")
         guard supportedHeadVersions.contains(headVersion) else { throw LogicModelError.invalidManifest("unsupported headVersion \(headVersion)") }
         guard try str("rulesId") == rulesID else { throw LogicModelError.invalidManifest("unsupported rulesId") }
-        guard try str("gateEncoding") == gateEncoding else { throw LogicModelError.invalidManifest("unsupported gateEncoding") }
+        let gateArity: Int
+        if m["gateArity"] == nil {
+            gateArity = 2 // v1 arity-2 manifests predate the explicit field.
+        } else {
+            gateArity = try int("gateArity")
+        }
+        guard gateArity == 2 || gateArity == 4 else { throw LogicModelError.invalidManifest("unsupported gateArity") }
+        let gateEncoding = try str("gateEncoding")
+        guard (gateArity == 2 && gateEncoding == Self.gateEncoding) ||
+                (gateArity == 4 && gateEncoding == Self.lut4GateEncoding) else {
+            throw LogicModelError.invalidManifest("unsupported gateEncoding/arity combination")
+        }
         guard try str("layout") == "NHWC" else { throw LogicModelError.invalidManifest("unsupported layout") }
         guard try str("endianness") == "little" else { throw LogicModelError.invalidManifest("unsupported endianness") }
         guard try str("valuePerspective") == "to-move" else { throw LogicModelError.invalidManifest("unsupported valuePerspective") }
@@ -140,15 +171,17 @@ public struct ModelManifest: Sendable, Equatable {
 
         // Byte sizes with overflow checks before any multiplication is trusted.
         let (lc, o1) = layers.multipliedReportingOverflow(by: channels)
-        let (wiringLen, o2) = lc.multipliedReportingOverflow(by: 32)
-        guard !o1, !o2, wiringLen + lc <= maxPayloadBytes else { throw LogicModelError.invalidManifest("payload too large") }
-        let gatesLen = lc
+        let (wiringLen, o2) = lc.multipliedReportingOverflow(by: gateArity * 16)
+        guard !o1, !o2, wiringLen <= maxPayloadBytes else { throw LogicModelError.invalidManifest("payload too large") }
+        let (gatesLen, o3g) = lc.multipliedReportingOverflow(by: gateArity == 4 ? 2 : 1)
+        guard !o3g else { throw LogicModelError.invalidManifest("payload too large") }
+        let names = fileNames(for: gateArity)
 
-        guard let filesAny = m["files"] as? [String: Any], Set(filesAny.keys) == Set(fileNames) else {
-            throw LogicModelError.invalidManifest("files must list exactly \(fileNames)")
+        guard let filesAny = m["files"] as? [String: Any], Set(filesAny.keys) == Set(names) else {
+            throw LogicModelError.invalidManifest("files must list exactly \(names)")
         }
         var files: [String: FileEntry] = [:]
-        for name in fileNames {
+        for name in names {
             guard let e = filesAny[name] as? [String: Any], let len = e["byteLength"] as? Int, len >= 0, len <= maxPayloadBytes,
                   let sha = e["sha256"] as? String, sha.count == 64, sha.allSatisfy({ "0123456789abcdef".contains($0) }) else {
                 throw LogicModelError.invalidManifest("files.\(name) invalid")
@@ -156,7 +189,7 @@ public struct ModelManifest: Sendable, Equatable {
             files[name] = FileEntry(byteLength: len, sha256: sha)
         }
         guard files["wiring.i32"]!.byteLength == wiringLen else { throw LogicModelError.invalidManifest("wiring.i32 byteLength != L*C*2*4*4") }
-        guard files["gates.u8"]!.byteLength == gatesLen else { throw LogicModelError.invalidManifest("gates.u8 byteLength != L*C") }
+        guard files[names[1]]!.byteLength == gatesLen else { throw LogicModelError.invalidManifest("\(names[1]) byteLength != L*C*gateWidth") }
         let headsLen = files["heads.f32"]!.byteLength
         let (wg, o4) = wiringLen.addingReportingOverflow(gatesLen)
         let (payload, o5) = wg.addingReportingOverflow(headsLen)
@@ -205,7 +238,7 @@ public struct ModelManifest: Sendable, Equatable {
         return ModelManifest(
             headVersion: headVersion, boardSizes: sizesAny, channels: channels, layers: layers, dilations: dilations,
             calibrationTemperature: Float(temp.doubleValue), files: files, headTensors: tensors,
-            trainingProvenanceJSON: provJSON, rawJSON: rawJSON
+            trainingProvenanceJSON: provJSON, rawJSON: rawJSON, gateArity: gateArity, gateEncoding: gateEncoding
         )
     }
 }

@@ -131,17 +131,19 @@ class LayerGather:
         else:
             raise ValueError(f"wiring layer must be [C,2,4] or [C,2,K,4], got {wiring_layer.shape}")
         K = refs.shape[2]
-        idx = np.empty((size, size, C, 2, K), dtype=np.int64)
+        n = refs.shape[1]
+        idx = np.empty((size, size, C, n, K), dtype=np.int64)
         ys = np.arange(size)[:, None] + pad
         xs = np.arange(size)[None, :] + pad
         for c in range(C):
-            for k in range(2):
+            for k in range(n):
                 for q in range(K):
                     bank, ch, dx, dy = (int(v) for v in refs[c, k, q])
                     cin = self.c0 if bank == 0 else self.c1
                     base = 0 if bank == 0 else bank0_len
                     idx[:, :, c, k, q] = base + (((ys + dy) * P + (xs + dx)) * cin + ch)
         self.k = K
+        self.n = n
         self.index = torch.from_numpy(idx)
         self.uses_bank1 = bool((refs[:, :, :, 0] == 1).any())
 
@@ -156,7 +158,14 @@ class LayerGather:
         else:
             flat = flat0
         index = self.index.to(prev.device).reshape(-1)
-        return flat[:, index].reshape(B, self.size, self.size, -1, 2, self.k)
+        return flat[:, index].reshape(B, self.size, self.size, -1, self.n, self.k)
+
+    def gather_all(self, prev: torch.Tensor, inputs: torch.Tensor) -> torch.Tensor:
+        """Gather one fixed reference tensor per input: ``[B,S,S,C,n]``."""
+        g = self.gather_candidates(prev, inputs)
+        if self.k != 1:
+            raise ValueError("gather_all() is only valid for a fixed or K=1 wiring table")
+        return g[..., 0]
 
     def gather(self, prev: torch.Tensor, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Gather fixed references; a K=1 candidate table is reduced to A/B tensors."""
@@ -180,6 +189,11 @@ class LogicNet(nn.Module):
         self.wiring_mode = wiring_mode
         self.wiring_tau = float(wiring_tau)
         self.spec = spec
+        if spec.gate_arity not in (2, 4):
+            raise ValueError("gate_arity must be 2 or 4")
+        if spec.gate_arity == 4 and wiring_mode != "fixed":
+            raise ValueError("wiring_mode learned-k is not supported for gate_arity=4")
+        self.gate_arity = spec.gate_arity
         if wiring_mode == "learned-k" and candidate_wiring is None:
             generated = generate_wiring_candidates(spec, wiring_candidates)
             candidate_wiring = generated.candidates
@@ -187,7 +201,7 @@ class LogicNet(nn.Module):
                 wiring = Wiring(wiring=generated.wiring, theta=generated.theta, dilations=generated.dilations)
         if wiring is None:
             wiring = generate_wiring(spec)
-        validate_wiring(wiring.wiring, spec.dilations)
+        validate_wiring(wiring.wiring, spec.dilations, spec.gate_arity)
         self.channels = spec.channels
         self.dilations = list(spec.dilations)
         self.register_buffer("wiring", torch.from_numpy(wiring.wiring.astype(np.int32)), persistent=True)
@@ -201,7 +215,10 @@ class LogicNet(nn.Module):
                 validate_wiring(candidate_wiring[:, :, :, k, :], spec.dilations)
             self.register_buffer("candidate_wiring", torch.from_numpy(candidate_wiring), persistent=True)
             self.phi = nn.Parameter(torch.zeros(spec.layers, spec.channels, 2, candidate_wiring.shape[3], dtype=torch.float32))
-        self.theta = nn.Parameter(torch.from_numpy(wiring.theta.astype(np.float32)))
+        if spec.gate_arity == 4:
+            self.phi = nn.Parameter(torch.from_numpy(wiring.theta.astype(np.float32)))
+        else:
+            self.theta = nn.Parameter(torch.from_numpy(wiring.theta.astype(np.float32)))
         if heads is None:
             rng = np.random.Generator(np.random.PCG64(spec.seed + 1))
             heads = init_heads(spec.channels, rng, head_version)
@@ -248,8 +265,20 @@ class LogicNet(nn.Module):
         return out
 
     def hard_gates(self) -> np.ndarray:
-        """``uint8 [L, C]`` argmax gate ids (smallest id on ties)."""
+        """Hard table words: arity 2 ``uint8`` gate IDs, arity 4 ``uint16`` LUT words."""
+        if self.gate_arity == 4:
+            return G.hard_lut(self.phi)
         return G.argmax_gate(self.theta)
+
+    def __getattr__(self, name):
+        # The pre-LUT training/checkpoint surface reads model.theta. Keep that alias for arity 4
+        # without registering the same Parameter twice in the state dict or optimizer.
+        if name == "theta":
+            params = self.__dict__.get("_parameters", {})
+            phi = params.get("phi")
+            if phi is not None:
+                return phi
+        return super().__getattr__(name)
 
     def head_numpy(self) -> dict[str, np.ndarray]:
         return {n: self.heads[n].detach().cpu().numpy().astype(np.float32) for n in HEAD_TENSOR_NAMES}
@@ -287,6 +316,8 @@ class LogicNet(nn.Module):
             hard = torch.from_numpy(self.hard_gates()).to(spatial.device)
             if self.wiring_mode == "learned-k":
                 hard_wiring = self.hard_wiring_numpy()
+        if gumbel_noise is not None and self.gate_arity == 4:
+            raise ValueError("gumbel-ste discretization is not supported for gate_arity=4")
         if gumbel_noise is not None:
             if tuple(gumbel_noise.shape) != tuple(self.theta.shape):
                 raise ValueError(f"gumbel_noise must have shape {tuple(self.theta.shape)}, got {tuple(gumbel_noise.shape)}")
@@ -303,20 +334,34 @@ class LogicNet(nn.Module):
                 mixed = (candidates * weights).sum(-1)
                 a, b = mixed[..., 0], mixed[..., 1]
             else:
-                a, b = gath.gather(x, spatial.to(torch.float32))
-            if is_hard_layer:
-                g = hard[l].to(torch.int64)  # [C]
-                row = (2 * a.to(torch.int64) + b.to(torch.int64))
-                y = ((g.view(1, 1, 1, -1) >> row) & 1).to(torch.float32)
-            else:
-                if gumbel_noise is None:
-                    t = G.reduce_theta(self.theta[l], tau)  # [C,4]
+                if self.gate_arity == 2:
+                    a, b = gath.gather(x, spatial.to(torch.float32))
                 else:
-                    p = G.gate_probabilities(self.theta[l] + gumbel_noise[l], tau)
-                    h = torch.nn.functional.one_hot(p.argmax(dim=-1), num_classes=G.NUM_GATES).to(p.dtype)
-                    p = h - p.detach() + p
-                    t = p @ G.truth_table_tensor(dtype=p.dtype, device=p.device)
-                y = G.soft_gate_reduced(t.view(1, 1, 1, -1, 4), a, b)
+                    inputs = gath.gather_all(x, spatial.to(torch.float32)).unbind(-1)
+            if is_hard_layer:
+                if self.gate_arity == 2:
+                    g = hard[l].to(torch.int64)  # [C]
+                    row = (2 * a.to(torch.int64) + b.to(torch.int64))
+                    y = ((g.view(1, 1, 1, -1) >> row) & 1).to(torch.float32)
+                else:
+                    table = hard[l].to(torch.int64)
+                    row = torch.zeros_like(inputs[0], dtype=torch.int64)
+                    for value in inputs:
+                        row = row * 2 + value.to(torch.int64)
+                    y = ((table.view(1, 1, 1, -1) >> row) & 1).to(torch.float32)
+            else:
+                if self.gate_arity == 2:
+                    if gumbel_noise is None:
+                        t = G.reduce_theta(self.theta[l], tau)  # [C,4]
+                    else:
+                        p = G.gate_probabilities(self.theta[l] + gumbel_noise[l], tau)
+                        h = torch.nn.functional.one_hot(p.argmax(dim=-1), num_classes=G.NUM_GATES).to(p.dtype)
+                        p = h - p.detach() + p
+                        t = p @ G.truth_table_tensor(dtype=p.dtype, device=p.device)
+                    y = G.soft_gate_reduced(t.view(1, 1, 1, -1, 4), a, b)
+                else:
+                    t = G.lut_probabilities(self.phi[l], tau)  # [C,16]
+                    y = G.soft_gate_lut_reduced(t.view(1, 1, 1, -1, 16), *inputs)
             outs.append(y)
             x = y
         return outs
@@ -335,9 +380,16 @@ class LogicNet(nn.Module):
         outs = []
         for l in range(len(self.dilations)):
             gath = self.gather_for(l, size, hard=True, hard_wiring=hard_wiring)
-            a, b = gath.gather(x, spatial)
-            row = 2 * a.to(torch.int32) + b.to(torch.int32)
-            y = ((gates[l].to(torch.int32).view(1, 1, 1, -1) >> row) & 1).to(torch.uint8)
+            if self.gate_arity == 2:
+                a, b = gath.gather(x, spatial)
+                row = 2 * a.to(torch.int32) + b.to(torch.int32)
+                y = ((gates[l].to(torch.int32).view(1, 1, 1, -1) >> row) & 1).to(torch.uint8)
+            else:
+                inputs = gath.gather_all(x, spatial).unbind(-1)
+                row = torch.zeros_like(inputs[0], dtype=torch.int32)
+                for value in inputs:
+                    row = row * 2 + value.to(torch.int32)
+                y = ((gates[l].to(torch.int32).view(1, 1, 1, -1) >> row) & 1).to(torch.uint8)
             outs.append(y)
             x = y
         return outs
@@ -415,5 +467,5 @@ def postprocess(policy_logits: np.ndarray, legal: np.ndarray, wdl_logits: np.nda
     return {"policy": policy.astype(np.float32), "wdl": wdl.astype(np.float32), "expected_result": expected.astype(np.float32)}
 
 
-def build_model(profile: str, seed: int = 20260908, head_version: int = HEAD_VERSION) -> LogicNet:
-    return LogicNet(ModelSpec.from_profile(profile, seed), head_version=head_version)
+def build_model(profile: str, seed: int = 20260908, head_version: int = HEAD_VERSION, gate_arity: int = 2) -> LogicNet:
+    return LogicNet(ModelSpec.from_profile(profile, seed, gate_arity=gate_arity), head_version=head_version)

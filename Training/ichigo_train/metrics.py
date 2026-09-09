@@ -10,6 +10,7 @@ import os
 import numpy as np
 import torch
 
+from . import gates as G
 from . import losses as L
 from .data_loader import to_tensors
 from .model import LogicNet
@@ -90,9 +91,15 @@ def evaluate_split(model: LogicNet, arrays: dict[str, np.ndarray], board_size: i
 @torch.no_grad()
 def gate_statistics(model: LogicNet, sample_spatial: torch.Tensor | None = None) -> dict:
     theta = model.theta.detach()
-    p = torch.softmax(theta, -1)
-    ent = -(p * torch.log(p.clamp_min(1e-12))).sum(-1)   # [L,C]
-    g = model.hard_gates()
+    gate_arity = getattr(model, "gate_arity", 2)
+    if gate_arity == 4:
+        p = G.lut_probabilities(theta, 1.0)
+        ent = -(p * torch.log(p.clamp_min(1e-12)) + (1 - p) * torch.log((1 - p).clamp_min(1e-12))).mean(-1)
+        g = model.hard_gates()
+    else:
+        p = torch.softmax(theta, -1)
+        ent = -(p * torch.log(p.clamp_min(1e-12))).sum(-1)   # [L,C]
+        g = model.hard_gates()
     per_layer = []
     hard_outs = None
     if sample_spatial is not None:
@@ -102,9 +109,9 @@ def gate_statistics(model: LogicNet, sample_spatial: torch.Tensor | None = None)
         d = {
             "layer": l,
             "gateEntropy": float(ent[l].mean()),
-            "constantRate": float(np.mean((gl == 0) | (gl == 15))),
-            "identityRate": float(np.mean((gl == 12) | (gl == 10))),
-            "notRate": float(np.mean((gl == 3) | (gl == 5))),
+            "constantRate": float(np.mean((gl == 0) | (gl == (65535 if gate_arity == 4 else 15)))),
+            "identityRate": float(np.mean((gl == 0xFF00) if gate_arity == 4 else ((gl == 12) | (gl == 10)))),
+            "notRate": float(np.mean((gl == 0x00FF) if gate_arity == 4 else ((gl == 3) | (gl == 5)))),
             "thetaGradNorm": float(theta.new_tensor(0.0)) if model.theta.grad is None else float(model.theta.grad[l].norm()),
         }
         if hard_outs is not None:

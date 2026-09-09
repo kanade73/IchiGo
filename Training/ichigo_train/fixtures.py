@@ -42,10 +42,11 @@ def random_inputs(rng: np.random.Generator, size: int, batch: int) -> tuple[np.n
     return spatial, glob, legal
 
 
-def write_parity_case(out_dir: str, name: str, size: int, batch: int, seed: int, profile: str = "tiny", head_version: int = 2) -> None:
+def write_parity_case(out_dir: str, name: str, size: int, batch: int, seed: int, profile: str = "tiny", head_version: int = 2,
+                      gate_arity: int = 2) -> None:
     case = os.path.join(out_dir, name)
     os.makedirs(case, exist_ok=True)
-    model = LogicNet(ModelSpec.from_profile(profile, seed), head_version=head_version)
+    model = LogicNet(ModelSpec.from_profile(profile, seed, gate_arity=gate_arity), head_version=head_version)
     # perturb theta with a fixed RNG so the argmax gates are diverse (not just identity/near-ties)
     g = torch.Generator().manual_seed(seed)
     with torch.no_grad():
@@ -80,7 +81,7 @@ def write_parity_case(out_dir: str, name: str, size: int, batch: int, seed: int,
     with open(os.path.join(case, "inputs.json"), "w") as f:
         json.dump({
             "boardSize": size, "batch": batch, "channels": model.channels, "layers": len(model.dilations),
-            "seed": seed, "profile": profile, "headVersion": head_version,
+            "seed": seed, "profile": profile, "headVersion": head_version, "gateArity": gate_arity,
             "spatialFile": "spatial.u8", "globalFile": "global.f32", "legalFile": "legal.u8",
             "layersFile": "layers.u8", "layersLayout": "[L,B,S,S,C] uint8",
         }, f, indent=2)

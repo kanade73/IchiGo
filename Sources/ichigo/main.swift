@@ -123,6 +123,9 @@ func makeBackend(_ name: String, model: LogicModelData) -> any LogicBackend {
     case "metal-packed":
         do { return try MetalPackedBackend(model: model) } catch { fail("metal-packed backend unavailable: \(error)", .usage) }
     case "auto":
+        if model.manifest.gateArity == 4 {
+            return PackedCPUBackend(model: model)
+        }
         if MetalAvailability.probe().available {
             do { return try MetalBackend(model: model) } catch { fail("metal backend unavailable: \(error)", .usage) }
         }
@@ -215,8 +218,8 @@ func loadModel(_ path: String) -> LogicModelData {
 func cmdInspect(_ args: Args) {
     let model = loadModel(args.require("model"))
     let m = model.manifest
-    var hist = [Int](repeating: 0, count: 16)
-    for layer in model.gates { for g in layer { hist[Int(g)] += 1 } }
+    var hist: [Int: Int] = [:]
+    for layer in model.gateTables { for g in layer { hist[Int(g), default: 0] += 1 } }
     printJSON([
         "boardSizes": m.boardSizes,
         "channels": m.channels,
@@ -226,7 +229,9 @@ func cmdInspect(_ args: Args) {
         "files": m.files.mapValues { ["byteLength": $0.byteLength, "sha256": $0.sha256] },
         "headTensors": m.headTensors.map { ["name": $0.name, "shape": $0.shape, "byteOffset": $0.byteOffset, "byteLength": $0.byteLength] },
         "payloadHash": model.payloadHash,
-        "gateHistogram": hist,
+        "gateArity": m.gateArity,
+        "gateEncoding": m.gateEncoding,
+        "gateHistogram": Dictionary(uniqueKeysWithValues: hist.map { (String($0.key), $0.value) }),
         "trainingProvenance": (try? JSONSerialization.jsonObject(with: m.trainingProvenanceJSON.data(using: .utf8)!)) ?? [:],
     ])
 }
