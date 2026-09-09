@@ -528,3 +528,9 @@ A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/
 - 完了: **wide512 局所 head v3 200k: hard top1 0.389 / MAE 0.272**（policy・value とも最良級）。3 倍データ（head v2、wide512、200k）: 0.381 / 0.281（value は 1 倍の 0.291 より改善、policy は同等 → データは value にのみ効く）。
 - 進行中: base head v3（74k）、wide512 head v3 3 倍データ（109k）、C=1024（28k）、C=2048（10k、0.51 秒/step）、LUT-4 C=256（3.3k、top1 0.208 と序盤の立ち上がりが速い）、LUT-4 C=512（1.7k）。クラッシュなし。
 - 1 秒/手の時間リーグ（small head v3 200k vs チャンピオン wide512 v2）を Mac で実行中。
+
+### 2026-09-10 20:25 巡回
+
+- 完了: **wide512 局所 head v3 + 3 倍データ 200k: hard top1 0.385 / expected MAE 0.259**（value 最良。head v3 とデータ増の効果が加算）。
+- C=2048 局所 head v3 は 35k step で top1 0.392（既存最良と同水準に早期到達）、C=1024 は 80k で 0.373 / 0.296。ゲート数増は policy に効く。
+- LUT-4: C=256 37k で 0.220、C=512 19k で 0.247。序盤の立ち上がりの後は 2 入力ゲート網より遅い（soft の 16 項積和の最適化が難しい可能性）。最終値で判断。クラッシュなし。
