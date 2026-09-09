@@ -20,6 +20,20 @@ torn down (``distributed.cleanup()``) on the fully-synchronized success path -- 
 ``destroy_process_group()`` from an error path can itself hang if not every rank calls it, so error
 paths just let the process die and rely on the OS + torchrun to reclaim resources.
 
+DDP construction ordering: every collective the Trainer issues (distributed.init's process-group
+creation, ``_verify_ddp_param_consistency``'s pre-flight broadcast, the DDP wrap itself, and every
+``validate()``/checkpoint barrier() and broadcast_object() afterwards) is unconditional -- issued by
+every rank, in the same order, never from an ``is_main``-only branch -- so no rank can get ahead of
+or behind its peers before a collective. ``DistributedDataParallel(self.model, ...)`` wraps the
+model immediately after it (and the optimizer, which issues no collective of its own) is built and
+moved to its device, before ``run()`` (and its ``validate("initial")``) is ever called, so it is
+the first collective that depends on the model actually matching across ranks.
+``_verify_ddp_param_consistency`` runs one
+step earlier still, as an explicit, symmetric, catchable check of that same precondition: a
+genuine per-rank model mismatch is otherwise only caught by DDP's own C++-level construction-time
+verification, whose failure can cascade into an NCCL collective timeout and a watchdog SIGABRT across
+every rank before the process ever gets to print a clean error.
+
 Exit codes: 0 ok, 2 config/schema error, 3 input/device error, 4 non-finite loss/gradient.
 """
 
@@ -118,6 +132,7 @@ class Trainer:
         self.opt = build_optimizer(self.model, cfg["gateLearningRate"], cfg["headLearningRate"], cfg["headWeightDecay"])
         self.sched = build_scheduler(self.opt, cfg["maxSteps"])
         if self.world_size > 1:
+            self._verify_ddp_param_consistency()
             # find_unused_parameters=True: the prefix-freeze schedule can put theta entirely
             # outside the forward graph (heads-only stage), which varies step to step.
             ddp_kwargs = {"find_unused_parameters": True}
@@ -160,6 +175,37 @@ class Trainer:
         self.last_frozen = self.schedule.state_at(self.step).frozen_prefix
         self.t_start = time.monotonic()
         self.val_time = 0.0
+
+    def _verify_ddp_param_consistency(self) -> None:
+        """Symmetric pre-flight check, run immediately before ``self.model`` is wrapped in
+        ``DistributedDataParallel``: every rank sends rank 0's (name, shape, dtype, requires_grad)
+        signature for every parameter (a single ``broadcast_object``, issued unconditionally by
+        every rank) and compares its own signature against it. This is exactly the precondition
+        ``torch.distributed.utils._verify_param_shape_across_processes`` re-checks internally when
+        DDP is constructed -- but a real mismatch there is discovered inside a C++/NCCL collective,
+        whose failure mode can cascade into a collective timeout and a watchdog SIGABRT on every
+        rank (see this module's docstring) before anyone learns *which* parameter differed or why.
+        Catching it here first, with a plain broadcast, means a genuine divergence between ranks
+        (a build/config path that produced a different model on one rank, e.g. an inconsistent
+        wiringMode, headVersion, or a rank that skipped/duplicated part of construction) raises an
+        ordinary, descriptive, independently-catchable Python exception on every affected rank
+        instead -- no NCCL-level abort involved, and no rank hangs waiting on a peer that already
+        diverged, since every rank already has everything it needs (its own signature, plus rank
+        0's, from the one broadcast) to decide locally whether to raise.
+        """
+        local_sig = [(n, tuple(p.shape), str(p.dtype), bool(p.requires_grad)) for n, p in self.model.named_parameters()]
+        ref_sig = D.broadcast_object(local_sig, src=0)
+        if local_sig == ref_sig:
+            return
+        local_map = {n: (shape, dtype, rg) for n, shape, dtype, rg in local_sig}
+        ref_map = {n: (shape, dtype, rg) for n, shape, dtype, rg in ref_sig}
+        missing = sorted(set(ref_map) - set(local_map))
+        extra = sorted(set(local_map) - set(ref_map))
+        differing = sorted(n for n in (set(local_map) & set(ref_map)) if local_map[n] != ref_map[n])
+        raise RuntimeError(
+            f"rank {self.rank} built a model with {len(local_sig)} parameters, but rank 0 built one with "
+            f"{len(ref_sig)}; missing={missing[:5]} extra={extra[:5]} differing={differing[:5]} (every rank "
+            "must build an identical model before it is wrapped in DistributedDataParallel)")
 
     def _check_resume(self, ck):
         if ck["featureVersion"] != FEATURE_VERSION:

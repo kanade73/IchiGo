@@ -395,3 +395,12 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - Swift 163 + Metal 66（skip 1）、pytest 189 通過。
 - T26 検収（1 GPU vs 2 GPU、100 step、resume）をサーバーの空き GPU 0/3 で実行中。4 GPU 検収は phase 4/5 完了後に実施。
 - phase 4 最良モデル `p4-local-gl30-200k` を export、Swift parity PASS、uniform baseline 100 局を実行中。
+
+### 2026-09-09 18:25 巡回
+
+- 完了: p4 wide512（512ch×8、局所配線、gateLR 0.1、200k）hard top1 **0.390** / MAE 0.291（logic 最良）。phase 5: Gumbel-STE（small 局所、100k）0.278 / 0.314 で prefix 方式より劣る。tauStart 0.5 + エントロピー罰則 0.368 / 0.295 で prefix と同等（soft-hard 差は早期に消えるが最終値は変わらず）。進行中: 16 層系 2 本、Gumbel base、learned-k 2 本。クラッシュなし。
+
+### 2026-09-09 19:25 巡回
+
+- `p4-local-gl30-200k` の uniform baseline 100 局: 100 勝 0 敗、CI [1.0, 1.0]、事故 0（PASS）。16 層局所 200k: hard top1 0.360 / MAE 0.289。
+- T26 検収: 1 GPU 100 step = 0.109 秒/step（1,179 samples/秒）。2 GPU torchrun 側は run-summary 未生成のため失敗を調査中。

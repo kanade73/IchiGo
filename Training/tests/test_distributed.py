@@ -171,3 +171,189 @@ def test_effective_batch_not_divisible_by_microbatch_times_worldsize_is_rejected
     assert resolve_accumulation(128, 8, 4) == 4
     assert resolve_accumulation(128, 32, 4) == 1
     assert resolve_accumulation(128, 8, 1) == 16
+
+
+# ---- production-ordering regression coverage -----------------------------------------------
+#
+# The two tests above construct a Trainer (which already runs the full DDP-construction path in
+# __init__) but only ever call train_step() directly -- never run(), so they never exercise
+# validate()'s or the checkpoint interval's barrier()/broadcast_object() sync points, and never hit
+# an interval or a prefix-freeze event. A real torchrun launch always goes through run(): an initial
+# validate("initial") before the first optimizer step, then interval-triggered validate()/checkpoint
+# calls (and possibly a freeze-triggered validate()) interleaved with train_step(), then the final
+# summary/cleanup. test_ddp_full_run_hits_validation_and_checkpoint_intervals below reproduces that
+# exact ordering with 2 real (CPU/gloo) processes; test_trainer_wraps_ddp_before_any_validation_collective
+# checks the specific invariant documented in train.py's module docstring and
+# Trainer._verify_ddp_param_consistency -- DDP wraps the model before any other collective that
+# depends on the model matching across ranks -- directly, with a fake (monkeypatched) process group.
+
+
+def _run_worker(rank, world_size, port, cfg_path, status_dir):
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["LOCAL_RANK"] = str(rank)
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    from ichigo_train.train import Trainer
+    t = Trainer(cfg_path, None)
+    is_main, out_dir = t.is_main, t.out
+    csv_is_none, log_is_none = t.csv is None, t.log is None
+    rc = t.run()
+    with open(os.path.join(status_dir, f"status-{rank}.json"), "w") as f:
+        json.dump({"rank": rank, "returnCode": rc, "isMain": is_main, "out": out_dir,
+                   "csvIsNone": csv_is_none, "logIsNone": log_is_none}, f)
+
+
+@pytest.mark.skipif(not _spawn_available(), reason="torch.multiprocessing spawn / gloo backend unavailable")
+def test_ddp_full_run_hits_validation_and_checkpoint_intervals(tmp_path):
+    """Real end-to-end reproduction of the production ordering (2 spawned CPU/gloo processes running
+    the actual Trainer.run(), not just train_step()): maxSteps/validationInterval/checkpointInterval
+    are chosen so a normal interval validate()+checkpoint AND a prefix-freeze-triggered validate()
+    both fire within the run (in addition to the initial validate("initial")), and throughputReference
+    points at a 1-process run-summary.json produced first, exactly as docs/spec/02-training.md's T26
+    acceptance procedure and this module's train_ddp.sh wrapper describe. Both ranks must finish;
+    rank 0 alone must write run-summary.json (worldSize 2, plus the throughput scaling fields); every
+    other rank's Trainer must never have opened a csv/log file (the is_main gate this module's
+    docstring documents) -- the direct, race-free way to check "non-zero ranks write no files", since
+    every rank shares the same `out` directory (as a real torchrun launch does: one config, one out
+    path) and rank 0 legitimately populates it."""
+    import torch.multiprocessing as mp
+
+    n = 24
+    make_fixture(tmp_path / "fx", n=n, seed=13)
+
+    # 1-process reference run, produced first, so the DDP run's throughputReference resolves.
+    ref_cfg = write_config(tmp_path / "ref.json", tmp_path / "fx", tmp_path / "run-ref",
+                            microBatch=8, effectiveBatch=8, maxSteps=2, validationInterval=2, checkpointInterval=2)
+    from ichigo_train.train import Trainer
+    ref_trainer = Trainer(ref_cfg, None)
+    assert ref_trainer.run() == 0
+    ref_summary = tmp_path / "run-ref" / "run-summary.json"
+    assert ref_summary.exists()
+
+    steps, interval = 4, 2  # both validationInterval and checkpointInterval hit within maxSteps
+    ddp_cfg = write_config(tmp_path / "ddp.json", tmp_path / "fx", tmp_path / "run-ddp",
+                            microBatch=4, effectiveBatch=8, maxSteps=steps, validationInterval=interval,
+                            checkpointInterval=interval, maxValidationPositions=16,
+                            throughputReference=str(ref_summary))
+    port = _free_port()
+    status_dir = tmp_path / "status"
+    status_dir.mkdir()
+    mp.spawn(_run_worker, args=(2, port, ddp_cfg, str(status_dir)), nprocs=2, join=True)
+
+    statuses = {}
+    for r in range(2):
+        with open(status_dir / f"status-{r}.json") as f:
+            statuses[r] = json.load(f)
+
+    assert statuses[0]["returnCode"] == 0 and statuses[1]["returnCode"] == 0, statuses
+    assert statuses[0]["isMain"] and not statuses[1]["isMain"]
+    # rank 0 opened csv/log for writing; every other rank never did.
+    assert statuses[0]["csvIsNone"] is False and statuses[0]["logIsNone"] is False
+    assert statuses[1]["csvIsNone"] is True and statuses[1]["logIsNone"] is True
+
+    out = tmp_path / "run-ddp"
+    for f in ("config.json", "resolved-config.json", "environment.json", "metrics.csv", "training.log",
+              "checkpoint-latest.pt", "checkpoint-best-hard.pt", "wiring.npz", "run-summary.json"):
+        assert (out / f).exists(), f
+    vals = sorted(os.listdir(out / "validation"))
+    assert any("initial" in v for v in vals) and len(vals) >= 2  # initial + at least one interval/freeze hit
+
+    summary = json.load(open(out / "run-summary.json"))
+    assert summary["worldSize"] == 2
+    assert summary["completed"] and summary["stepsTrained"] == steps
+    th = summary["throughput"]
+    assert th["worldSize"] == 2
+    assert sorted(d["rank"] for d in th["perRank"]) == [0, 1]
+    assert th["throughputReferenceRun"] == str(ref_summary)
+    assert "throughputRatio" in th and "scalingEfficiency" in th
+    assert th["scalingEfficiency"] == pytest.approx(th["throughputRatio"] / 2)
+
+
+def test_trainer_wraps_ddp_before_any_validation_collective(monkeypatch, tmp_path):
+    """Unit-level regression test for the collective-ordering invariant this module's docstring and
+    Trainer._verify_ddp_param_consistency document: DistributedDataParallel must wrap the model
+    before the Trainer issues any collective that depends on the model matching across ranks --
+    concretely, before validate()'s barrier()/broadcast_object() sync points. Uses a fake process
+    group: torch.distributed's collectives and DistributedDataParallel itself are monkeypatched to
+    recording no-ops, so this runs as a single real process pretending to be rank 0 of world_size 2
+    (no real peer, no real gloo/NCCL backend) while still exercising the genuine Trainer.__init__ (DDP
+    construction) followed by the same validate("initial") call run() makes first."""
+    import ichigo_train.distributed as D
+    from ichigo_train import train as T
+
+    events: list[str] = []
+
+    def fake_init_process_group(*a, **k):
+        events.append("init_process_group")
+
+    def fake_barrier(*a, **k):
+        events.append("barrier")
+
+    def fake_broadcast_object_list(box, src=0):
+        events.append("broadcast_object_list")
+        # rank (0) == src in this single-simulated-process test: box[0] already holds the real
+        # rank-0 object, so there is nothing to fill in for a fake "receive".
+
+    class FakeDDP:
+        def __new__(cls, module, **kwargs):
+            events.append("ddp_construct")
+            return module  # identity wrap: sufficient to check ordering, no real replication needed
+
+    saved_state = dict(D._STATE)
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setattr(D.dist, "init_process_group", fake_init_process_group)
+    monkeypatch.setattr(D.dist, "barrier", fake_barrier)
+    monkeypatch.setattr(D.dist, "broadcast_object_list", fake_broadcast_object_list)
+    monkeypatch.setattr(T, "DistributedDataParallel", FakeDDP)
+    try:
+        make_fixture(tmp_path / "fx", n=11, seed=3)
+        cfg = write_config(tmp_path / "cfg.json", tmp_path / "fx", tmp_path / "run", maxSteps=4, validationInterval=2, checkpointInterval=2)
+        t = T.Trainer(cfg, None)
+        assert t.world_size == 2 and t.rank == 0
+        t.validate("initial")
+        t.csv.close(); t.log.close()
+    finally:
+        D._STATE.clear()
+        D._STATE.update(saved_state)
+
+    assert events[0] == "init_process_group"
+    assert "ddp_construct" in events
+    ddp_index = events.index("ddp_construct")
+    pre_ddp, post_ddp = events[:ddp_index], events[ddp_index + 1:]
+    # The only collective allowed before the DDP wrap is _verify_ddp_param_consistency's own
+    # single pre-flight broadcast; in particular no barrier() (validate()'s sync points) may occur.
+    assert pre_ddp.count("barrier") == 0, f"a barrier() happened before DDP construction: {events}"
+    assert pre_ddp.count("broadcast_object_list") == 1, f"expected exactly the pre-flight consistency broadcast before DDP construction: {events}"
+    # validate("initial")'s own two barriers and one broadcast must all come after the DDP wrap.
+    assert post_ddp.count("barrier") == 2, f"validate()'s barriers must follow DDP construction: {events}"
+    assert post_ddp.count("broadcast_object_list") == 1, f"validate()'s broadcast must follow DDP construction: {events}"
+
+
+def test_verify_ddp_param_consistency_raises_on_mismatch(monkeypatch, tmp_path):
+    """Direct unit test of Trainer._verify_ddp_param_consistency: if the (broadcasted) reference
+    signature from rank 0 does not match this rank's own model, it must raise a clear, local
+    RuntimeError -- not hang, and not silently proceed into DistributedDataParallel's own harsher
+    C++-level check."""
+    import ichigo_train.distributed as D
+    from ichigo_train import train as T
+
+    make_fixture(tmp_path / "fx", n=11, seed=4)
+    cfg = write_config(tmp_path / "cfg.json", tmp_path / "fx", tmp_path / "run", maxSteps=1, validationInterval=1, checkpointInterval=1)
+
+    saved_state = dict(D._STATE)
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setattr(D.dist, "init_process_group", lambda *a, **k: None)
+    # Simulate a peer whose rank-0 broadcast reports one extra parameter this rank does not have.
+    monkeypatch.setattr(D.dist, "broadcast_object_list",
+                         lambda box, src=0: box.__setitem__(0, box[0] + [("phantom", (1,), "torch.float32", True)]))
+    try:
+        with pytest.raises(RuntimeError, match="phantom|parameters"):
+            T.Trainer(cfg, None)
+    finally:
+        D._STATE.clear()
+        D._STATE.update(saved_state)
