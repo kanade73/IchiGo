@@ -49,12 +49,15 @@ release-check: ## CPU + Metal + cgos tests + release build/verify + 2-game hard-
 	BIN="$$($(SWIFT) build -c release --show-bin-path)/ichigo"; "$$BIN" doctor | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin)['metal']['available'] else 1)" || (echo "release-check: FAILED -- no Metal device detected by 'ichigo doctor'. docs/spec/05-validation.md §1 requires Mac Metal for release-check; refusing to silently pass." >&2; exit 1)
 	$(MAKE) check-metal
 	cd Training && $(UV) run pytest -q ../Tests/cgos
-	DIST=$$(Scripts/release/build.sh $(RELEASE_MODEL)) && \
-	echo "release-check: dist = $$DIST" && \
-	Scripts/release/verify.sh "$$DIST" && \
+	DIST=$$(Scripts/release/build.sh $(RELEASE_MODEL)); \
+	if [ -z "$$DIST" ]; then echo "release-check: FAILED -- Scripts/release/build.sh produced no dist directory" >&2; exit 1; fi; \
+	echo "release-check: dist = $$DIST"; \
+	Scripts/release/verify.sh "$$DIST" || { echo "release-check: FAILED -- Scripts/release/verify.sh" >&2; exit 1; }; \
 	$(UV) run --project Training python -m ichigo_train match \
 		--engine-a "$$DIST/ichigo gtp --model-9 $$DIST/models/$(notdir $(RELEASE_MODEL)) --backend auto" \
 		--engine-b uniform --games 2 --size 9 --komi 7 --openings none \
-		--out reports/matches/release-check-smoke --seed 20260909 --visits-a 50 && \
-	python3 -c "import json,sys; r=json.load(open('reports/matches/release-check-smoke/report.json')); inc=sum(r['incidents'].values()); print('release-check: smoke match incidents:', r['incidents']); sys.exit(0 if inc==0 else 1)" || (echo "release-check: FAILED -- 2-game smoke match reported non-zero incidents" >&2; exit 1) && \
+		--out reports/matches/release-check-smoke --seed 20260909 --visits-a 50 \
+		|| { echo "release-check: FAILED -- 2-game hard-model smoke match" >&2; exit 1; }; \
+	python3 -c "import json,sys; r=json.load(open('reports/matches/release-check-smoke/report.json')); inc=sum(r['incidents'].values()); print('release-check: smoke match incidents:', r['incidents']); sys.exit(0 if inc==0 else 1)" \
+		|| { echo "release-check: FAILED -- 2-game smoke match reported non-zero incidents" >&2; exit 1; }; \
 	echo "release-check: PASS ($$DIST)"

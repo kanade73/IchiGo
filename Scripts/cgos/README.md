@@ -62,7 +62,7 @@ time).
 |---|---|
 | `host`, `port` | CGOS server to connect to. Never a real server's address in a committed config -- see below. |
 | `username` | CGOS login name. |
-| `password_file` | **Relative path** to a file containing just the password. Must not be absolute (rejected at load time) and must never be committed with real contents -- keep it under a gitignored directory such as `state_dir` or a repo-root `secrets/` folder. |
+| `password_file` | **Relative path** to a file containing just the password. Must not be absolute (rejected at load time) and must never be committed with real contents -- keep it under a directory this repo's `.gitignore` actually excludes (`data/`, `runs/`, `models/`, `teachers/`, `tools/` -- e.g. `state_dir` under `runs/cgos/<name>/`), not under `configs/` or an un-ignored `secrets/` folder; verify with `git check-ignore -v <path>` before writing a real password there. |
 | `board_size` | `9` or `19`. Must match the model given in `engine_argv`. |
 | `engine_argv` | The exact argv to launch the engine, as a **JSON array** (never a shell string -- a string would need naive splitting, which breaks on any path containing a space; docs/spec/03-engine.md §9: "パス空白をnaive splitしない"). E.g. `[".build/release/ichigo", "gtp", "--model-9", "models/x.ichigo"]`. |
 | `analysis` | `true` to request `kata-genmove_analyze` and send the CGOS analysis extension when the server offers `genmove_analyze`; `false` to always use plain `genmove`. |
@@ -75,10 +75,14 @@ time).
 Nothing in this repository may contain a real host, account name, or password. Before connecting
 for real:
 
-1. Copy `configs/cgos.example.json` to a config **outside version control** (e.g.
-   `configs/cgos.local.json`, or anywhere under a directory your `.gitignore` already excludes --
-   `configs/` itself is gitignored in this repo, matching every other example config here) and
-   fill in the real `host`/`port`/`username`.
+1. Copy `configs/cgos.example.json` to a config **outside version control**. **Do not put it under
+   `configs/cgos.local.json` or anywhere else under `configs/`** -- checked directly
+   (`git check-ignore -v configs/anything`), `configs/` is *not* gitignored in this repo (only
+   `data/`, `runs/`, `models/`, `teachers/`, and `tools/` are, per the repo-root `.gitignore`), so
+   a real config left there is one `git add -A`/`git add configs/` away from being committed.
+   Instead use a path under one of those gitignored directories (e.g. `runs/cgos/<name>/cgos.json`,
+   matching the `state_dir`/`log_dir` suggestion in step 4) or a path entirely outside this
+   repository, and fill in the real `host`/`port`/`username`.
 2. Create the password file it points at (`password_file`, relative to the config file's own
    directory) with just the password in it, and make sure that path is not committed either.
 3. Point `engine_argv` at the release binary and the model you intend to run

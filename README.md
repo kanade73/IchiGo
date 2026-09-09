@@ -56,6 +56,19 @@ swift run -c release ichigo gtp --model-9 models/small-9.ichigo --visits 100
 
 pilot 一式は `Scripts/train_pilot.sh`（16 局面過学習検収 → 100 step → 2000 step → export → Swift parity）。
 
+## 運用（release・CGOS）
+
+```sh
+make release-check                              # CPU+Metal+cgos tests、release build/verify、2局smoke match（T37、Mac Metal必須）
+Scripts/release/build.sh models/<name>.ichigo    # dist/ichigo-<version>-<arch>/ に release バイナリ・Metal resource・
+                                                  # モデル・configs/cgos.example.json・Scripts/cgos・MANIFEST.json を作る
+Scripts/release/verify.sh dist/ichigo-<version>-<arch>/   # MANIFEST.json の再ハッシュ、doctor/inspect、GTP smoke（path非依存）
+```
+
+実運用（モデル準備、ローカル CGOS リハーサル、実 CGOS への接続、トラブルシューティング）は
+**[docs/runbook.md](docs/runbook.md)** を参照。release ごとの検証結果は
+**[docs/release-report-template.md](docs/release-report-template.md)** の形式で記録する。
+
 ## 文書
 
 | 文書 | 内容 |
@@ -67,6 +80,8 @@ pilot 一式は `Scripts/train_pilot.sh`（16 局面過学習検収 → 100 step
 | [04-tasks](docs/spec/04-tasks.md) | 実装チケット、依存関係、検収条件 |
 | [05-validation](docs/spec/05-validation.md) | 数値検証、棋力評価、性能、リリース条件 |
 | [06-evidence](docs/spec/06-evidence.md) | 調査根拠、参照ファイル、未検証事項 |
+| [runbook](docs/runbook.md) | ビルド、モデル準備、CGOS（ローカル/実サーバー）運用、トラブルシューティング |
+| [release-report-template](docs/release-report-template.md) | release ごとの実装/検証/棋力/未実行環境/hash 記録テンプレート |
 | [implementation-status](docs/implementation-status.md) | 完了チケット、実行した検証、結果、未解決事項 |
 
 ## 出所と謝辞

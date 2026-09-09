@@ -32,7 +32,9 @@ MODEL_DIR=$(cd "$MODEL_DIR" && pwd)
 MODEL_NAME=$(basename "$MODEL_DIR")
 
 echo "== swift build -c release --product ichigo ==" >&2
-swift build -c release --product ichigo
+# swift build's own progress output goes to stdout by default; redirect it to stderr so this
+# script's stdout carries only the final dist-dir path (callers do `DIST=$(build.sh ...)`).
+swift build -c release --product ichigo >&2
 BIN_DIR=$(swift build -c release --show-bin-path)
 BIN_PATH="$BIN_DIR/ichigo"
 [ -x "$BIN_PATH" ] || { echo "build.sh: $BIN_PATH missing after swift build" >&2; exit 2; }

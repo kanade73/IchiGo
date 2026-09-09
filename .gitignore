@@ -13,6 +13,7 @@ runs/
 models/
 teachers/
 tools/
+dist/
 *.log
 .claude/
 .vscode/
