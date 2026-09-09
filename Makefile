@@ -1,8 +1,10 @@
 # IchiGo make contract (docs/spec/05-validation.md §1). M0 implements the CPU targets;
-# Metal/CUDA/integration targets are declared and fail explicitly until their tickets land.
+# check-metal/release-check are implemented (T22+/T37); CUDA/integration targets are still
+# declared and fail explicitly until their tickets land.
 UV ?= uv
 SWIFT ?= swift
 FIXTURES := Tests/Fixtures
+RELEASE_MODEL := models/p4-local-wide512-200k.ichigo
 
 .PHONY: help build check-cpu parity-cpu check-training check-metal parity-metal check-cuda integration release-check fixtures
 
@@ -41,5 +43,18 @@ check-cuda: ## CUDA forward/backward and DDP tests (T17/T26, university GPUs)
 integration: ## fake teacher / GTP / fake CGOS / clock tests (T12+)
 	@echo "integration: not implemented until M1/M2 tickets"; exit 1
 
-release-check: ## CPU + Metal + integration + hard-model smoke (T37)
-	@echo "release-check: not implemented until T37"; exit 1
+release-check: ## CPU + Metal + cgos tests + release build/verify + 2-game hard-model smoke match (T37)
+	$(MAKE) check-cpu
+	$(SWIFT) build -c release --product ichigo
+	BIN="$$($(SWIFT) build -c release --show-bin-path)/ichigo"; "$$BIN" doctor | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin)['metal']['available'] else 1)" || (echo "release-check: FAILED -- no Metal device detected by 'ichigo doctor'. docs/spec/05-validation.md §1 requires Mac Metal for release-check; refusing to silently pass." >&2; exit 1)
+	$(MAKE) check-metal
+	cd Training && $(UV) run pytest -q ../Tests/cgos
+	DIST=$$(Scripts/release/build.sh $(RELEASE_MODEL)) && \
+	echo "release-check: dist = $$DIST" && \
+	Scripts/release/verify.sh "$$DIST" && \
+	$(UV) run --project Training python -m ichigo_train match \
+		--engine-a "$$DIST/ichigo gtp --model-9 $$DIST/models/$(notdir $(RELEASE_MODEL)) --backend auto" \
+		--engine-b uniform --games 2 --size 9 --komi 7 --openings none \
+		--out reports/matches/release-check-smoke --seed 20260909 --visits-a 50 && \
+	python3 -c "import json,sys; r=json.load(open('reports/matches/release-check-smoke/report.json')); inc=sum(r['incidents'].values()); print('release-check: smoke match incidents:', r['incidents']); sys.exit(0 if inc==0 else 1)" || (echo "release-check: FAILED -- 2-game smoke match reported non-zero incidents" >&2; exit 1) && \
+	echo "release-check: PASS ($$DIST)"

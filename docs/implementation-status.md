@@ -425,3 +425,8 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 ### 2026-09-09 23:25 巡回
 
 - `p4-local-wide512-200k`（logic 最良、hard top1 0.390）: uniform baseline 100 局 100 勝、事故 0、Swift parity PASS、1.2 秒/手で約 4,100 visits（Metal auto）。実験は 4 本進行中（16 層×512、Gumbel base、learned-k ×2）、クラッシュなし。
+
+### 2026-09-10 00:30: モデル間比較（T31 の初回運用）
+
+- 開局なしの対局は決定的で 100 局中 2 種類の棋譜しか出ず（黒が全勝）、比較にならない。固定開局 `configs/openings/random4-9x9-seed20260909.jsonl`（ランダム 4 手 × 60、seed 固定）を作り、色交換ペアで使用する。
+- `p4-local-wide512-200k` vs `p2-small-gl10`（各 100 visits、9 路 komi 7、50 開局 × 色交換）: 63 勝 6 分 31 敗、平均得点 0.66、paired bootstrap 95% CI [0.57, 0.745]、全 100 局が相異なる棋譜、事故 0。wide512 の方が有意に強い（05 §6 の promotion 条件のうち CI 下限 > 0.5 を visits 固定リーグで満たす。1 秒/5 秒の時間リーグは未実施）。

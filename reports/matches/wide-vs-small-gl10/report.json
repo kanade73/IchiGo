@@ -1,0 +1,71 @@
+{
+  "countedGames": 100,
+  "draws": 6,
+  "eloEstimate": 115.22600739984543,
+  "engines": {
+    "A": {
+      "argv": [
+        "/Users/kanade/dev/univ/koubou/IchiGo/.build/release/ichigo",
+        "gtp",
+        "--model-9",
+        "/Users/kanade/dev/univ/koubou/IchiGo/models/p4-local-wide512-200k.ichigo",
+        "--backend",
+        "auto"
+      ],
+      "kind": "gtp",
+      "label": "A",
+      "visits": 100
+    },
+    "B": {
+      "argv": [
+        "/Users/kanade/dev/univ/koubou/IchiGo/.build/release/ichigo",
+        "gtp",
+        "--model-9",
+        "/Users/kanade/dev/univ/koubou/IchiGo/models/p2-small-gl10.ichigo",
+        "--backend",
+        "auto"
+      ],
+      "kind": "gtp",
+      "label": "B",
+      "visits": 100
+    }
+  },
+  "games": 100,
+  "incidents": {
+    "crashes": 0,
+    "illegalMoves": 0,
+    "timeouts": 0,
+    "truncations": 0
+  },
+  "losses": 31,
+  "meanScore": 0.66,
+  "openingsFileHash": "906337f9a805717c008522d9d024b3adb93e079bdbe88f43a1f29874ba81dd81",
+  "pairedCI95": {
+    "ci": 0.95,
+    "high": 0.745,
+    "low": 0.57,
+    "mean": 0.66,
+    "n": 50,
+    "resamples": 10000,
+    "seed": 20260909
+  },
+  "seed": 20260909,
+  "settings": {
+    "commandTimeoutSeconds": 30.0,
+    "genmoveTimeoutSeconds": 120.0,
+    "komi": 7.0,
+    "maxMoves": 324,
+    "size": 9,
+    "timeMainSeconds": null
+  },
+  "unpairedCI95": {
+    "ci": 0.95,
+    "high": 0.75,
+    "low": 0.57,
+    "mean": 0.66,
+    "n": 100,
+    "resamples": 10000,
+    "seed": 20260909
+  },
+  "wins": 63
+}
