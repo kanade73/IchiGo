@@ -62,6 +62,19 @@ value の切り分け（学習なし）: ownership 総和 → sigmoid で MAE 0.
 
 `--value-source ownership`（Σownership+komi の sigmoid）は探索で明確に負け（対 network 0.215、CI [0.14, 0.29]）、50/50 混合でも 0.425（CI [0.34, 0.51]）。局面単位の MAE では同水準でも、探索の葉（対局途中の未整理な局面）では NN wdl head の方が一貫している。ownership 由来 value は不採用（インフラは残す）。head v3 の学習結果待ち。
 
+### value の到達点（2026-09-10 夜）
+
+| 構成 | policy top1 | expected MAE |
+|---|---|---|
+| head v2 系の最良（wide512 局所 200k） | 0.390 | 0.291 |
+| head v3 small 200k | 0.367 | 0.267 |
+| head v3 wide512 200k | 0.389 | 0.272 |
+| head v3 wide512 + 3 倍データ 200k | 0.385 | **0.259** |
+| C=2048 head v3（35k 途中） | 0.392 | — |
+| CNN baseline | 0.528 | 0.159 |
+
+分かったこと: value に効くのは「head の空間分解能（3×3 領域プーリング）」と「データ量」で、ゲート数は policy に効く。Gumbel-STE、配線学習、深さ、ownership 由来 value、プレイアウト value は効かない（後者 2 つは対局で大敗）。5×5 プーリングはプローブで過学習し保留。データ量は value にだけ効くので、value 目的の追加ラベルは安価。本命構成「C=2048 + head v3 + 3 倍データ」を学習中。
+
 ## 6. 進行中（2026-09-10 早朝）
 
 - headVersion 3（3×3 領域プーリング）の実装 → phase 7 学習。
