@@ -522,3 +522,9 @@ A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/
 - small 局所 head v3 200k: hard top1 0.367 / **expected MAE 0.267**（最良）。gateLR 0.3 版 0.370 / 0.275。head v3 は value に一貫して効く（v2 の 0.29 台 → 0.27 前後）。wide512 head v3 と 3 倍データ版は完了間近。
 - LUT-4（4 入力真理値表ゲート、`gateArity 4`、`lut4-msb-first`、gates.u16）を実装（Python 208、Swift 189、parity-cpu 通過、commit 済み）。C=256 / C=512 局所 head v3 を 100k step で起動（0.38 / 0.74 秒/step。soft 評価が 16 項の積和になるため遅い）。
 - rollout value の固定 visits 比較は 10 局に縮小して実行中。
+
+### 2026-09-10 18:25 巡回
+
+- 完了: **wide512 局所 head v3 200k: hard top1 0.389 / MAE 0.272**（policy・value とも最良級）。3 倍データ（head v2、wide512、200k）: 0.381 / 0.281（value は 1 倍の 0.291 より改善、policy は同等 → データは value にのみ効く）。
+- 進行中: base head v3（74k）、wide512 head v3 3 倍データ（109k）、C=1024（28k）、C=2048（10k、0.51 秒/step）、LUT-4 C=256（3.3k、top1 0.208 と序盤の立ち上がりが速い）、LUT-4 C=512（1.7k）。クラッシュなし。
+- 1 秒/手の時間リーグ（small head v3 200k vs チャンピオン wide512 v2）を Mac で実行中。
