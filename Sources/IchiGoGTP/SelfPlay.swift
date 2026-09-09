@@ -15,9 +15,12 @@ public enum SelfPlay {
         public let result: String
     }
 
-    public static func playGame(slot: GTPEngine.ModelSlot, size: Int, komi: Float, visits: Int, seed: UInt64, maxMoves: Int) async throws -> GameOutput {
+    public static func playGame(
+        slot: GTPEngine.ModelSlot, size: Int, komi: Float, visits: Int, seed: UInt64, maxMoves: Int,
+        settings: SearchSettings = SearchSettings()
+    ) async throws -> GameOutput {
         let game = try GameState(boardSize: size, komi: komi)
-        let search = try Search(evaluator: slot.evaluator, modelHash: slot.modelHash, initial: game.record)
+        let search = try Search(evaluator: slot.evaluator, modelHash: slot.modelHash, settings: settings, initial: game.record)
         var sgfMoves: [String] = []
         var targets: [String] = []
         var n = 0

@@ -39,6 +39,37 @@ actor FakeEvaluator: PositionEvaluating {
     func preWarm(size: Int) async throws {}
 }
 
+/// Fake evaluator (Tests only) for the `ValueSource.ownership` search test: `winDrawLoss`/
+/// `expectedResult` are always uninformative (0.5, so `.network` mode never distinguishes any
+/// move), but the ownership head strongly favours whichever child follows `favouredMove` (played
+/// from the root) — the position `.ownership` mode must find and `.network` mode must not.
+actor OwnershipFakeEvaluator: PositionEvaluating {
+    let capabilities: ModelCapabilities
+    let favouredMove: MoveCoord
+    init(sizes: Set<Int>, favouredMove: MoveCoord) {
+        capabilities = ModelCapabilities(boardSizes: sizes, rulesID: IchiGoRules.rulesID, hasOwnership: true)
+        self.favouredMove = favouredMove
+    }
+
+    func evaluate(_ positions: [PositionSnapshot]) async throws -> [LogicEvaluation] {
+        positions.map { s in
+            let P = s.boardSize * s.boardSize
+            var policy = [Float](repeating: 0, count: P + 1)
+            var mass: Float = 0
+            for i in 0 ... P where s.legal[i] == 1 { policy[i] = 1; mass += 1 }
+            policy = policy.map { $0 / mass }
+            // Only the child reached by playing `favouredMove` at the root gets a strongly
+            // negative ownership sum (in the *child's* to-move perspective) — i.e. a strong
+            // advantage for whoever just moved there.
+            let isFavouredChild = s.recentMoves.first == favouredMove
+            let own: Float = isFavouredChild ? -1 : 0
+            return LogicEvaluation(policy: policy, winDrawLoss: [0.5, 0, 0.5], expectedResult: 0.5, scoreMean: 0, ownership: [Float](repeating: own, count: P))
+        }
+    }
+
+    func preWarm(size: Int) async throws {}
+}
+
 final class SearchTests: XCTestCase {
     /// Opt-in performance smoke test for comparing tree overhead across board sizes. Run with
     /// `ICHIGO_RUN_BENCHMARK=1 swift test --filter testSearchMicroBenchmarkVisitsPerSecond`.
@@ -145,6 +176,27 @@ final class SearchTests: XCTestCase {
         let after = await search.rootVisits()
         XCTAssertEqual(after, 0)
         do { try await search.makeMove(.point(x: 40, y: 0)); XCTFail() } catch {}
+    }
+
+    /// docs/spec/03-engine.md §3-4 "値ソース": with a wdl head that never distinguishes any move
+    /// (always 0.5) but an ownership head that clearly favours one, `.ownership` must find and
+    /// play that move while plain `.network` (which ignores ownership for the value) cannot and
+    /// falls back to the lowest-index legal move (all Q tie at 0, so PUCT ties break by index).
+    func testValueSourceOwnershipPicksMoveNetworkModeCannotSee() async throws {
+        let favoured = MoveCoord.point(x: 5, y: 0)  // index 5 on 9x9: not the lowest legal index
+        let ev = OwnershipFakeEvaluator(sizes: [9], favouredMove: favoured)
+        var st = SearchSettings(); st.leafBatch = 1
+        let g = try GameState(boardSize: 9, komi: 7)
+
+        st.valueSource = .ownership(k: 6, b: 1)
+        let ownershipSearch = try Search(evaluator: ev, modelHash: "fake", settings: st, initial: g.record)
+        let ownershipResult = try await ownershipSearch.run(visits: 200)
+        XCTAssertEqual(ownershipResult.move, favoured)
+
+        st.valueSource = .network
+        let networkSearch = try Search(evaluator: ev, modelHash: "fake", settings: st, initial: g.record)
+        let networkResult = try await networkSearch.run(visits: 200)
+        XCTAssertNotEqual(networkResult.move, favoured)
     }
 
     func testNodeBudgetStopsExpansion() async throws {

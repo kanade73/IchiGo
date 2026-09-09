@@ -4,7 +4,16 @@ import numpy as np
 import pytest
 import torch
 
-from ichigo_train.model import HEAD_TENSOR_NAMES, LogicNet, build_model, head_shapes, postprocess
+from ichigo_train.model import (
+    HEAD_TENSOR_NAMES,
+    LogicNet,
+    build_model,
+    global_input_size,
+    head_shapes,
+    postprocess,
+    region_bounds,
+    regional_means,
+)
 from ichigo_train.wiring import DEFAULT_SEED, ModelSpec, generate_wiring, validate_wiring
 
 # Computed with the pre-T33 wiring.py (only spec.seed, hardcoded 90/10 bank split) -- any change
@@ -58,6 +67,63 @@ def test_head_shapes_and_forward_both_sizes():
     shapes = head_shapes(64)
     for n in HEAD_TENSOR_NAMES:
         assert tuple(m.heads[n].shape) == shapes[n]
+    for S, B in ((9, 3), (19, 2)):
+        sp = torch.from_numpy(np.random.default_rng(S).integers(0, 2, size=(B, S, S, 32)).astype(np.uint8))
+        g = torch.zeros(B, 4)
+        out = m.forward_hard(sp, g)
+        assert out["policy_logits"].shape == (B, S * S + 1)
+        assert out["wdl_logits"].shape == (B, 3)
+        assert out["score_mean"].shape == (B,)
+        assert out["ownership"].shape == (B, S * S)
+        soft = m(sp, g, tau=1.0)
+        assert soft["policy_logits"].shape == (B, S * S + 1)
+
+
+# ---- headVersion 3 (docs/spec/01-network.md §4): zreg, the 3x3-region mean of z_xy ----
+
+def test_region_bounds_hand_checked_9_and_19():
+    """9路: 3点ずつの3等分。19路: 6/6/7点の3等分 (floor(i*S/3))."""
+    assert region_bounds(9) == [0, 3, 6, 9]
+    assert region_bounds(19) == [0, 6, 12, 19]
+    # row/col counts per region: 9 -> 3,3,3; 19 -> 6,6,7
+    b9 = region_bounds(9)
+    assert [b9[i + 1] - b9[i] for i in range(3)] == [3, 3, 3]
+    b19 = region_bounds(19)
+    assert [b19[i + 1] - b19[i] for i in range(3)] == [6, 6, 7]
+    # smallest legal board (S=3): one point per region
+    assert region_bounds(3) == [0, 1, 2, 3]
+
+
+def test_global_input_size_head_version_3():
+    assert global_input_size(64, 3) == 2 * 64 + 64 + 576 + 1 + 4 == 773
+    shapes = head_shapes(64, 3)
+    assert shapes["Wglobal"] == (773, 128)
+    # local head (Wlocal) is unaffected by headVersion -- it never sees zreg.
+    assert shapes["Wlocal"] == (3 * 64 + 4, 64)
+
+
+def test_regional_means_matches_manual_slicing_both_sizes():
+    """Cross-checks `regional_means`'s [B,9*H] output against an independently written
+    slice-and-mean per region, for both board sizes -- confirms the row-major (i*3+j) ordering,
+    each region's contiguous H values, and the exact integer region boundaries."""
+    for S in (9, 19):
+        z = torch.from_numpy(np.random.default_rng(S + 1).standard_normal((2, S, S, 4)).astype(np.float32))
+        got = regional_means(z)
+        assert got.shape == (2, 9 * 4)
+        bounds = region_bounds(S)
+        for i in range(3):
+            for j in range(3):
+                r0, r1 = bounds[i], bounds[i + 1]
+                c0, c1 = bounds[j], bounds[j + 1]
+                expected = z[:, r0:r1, c0:c1, :].mean(dim=(1, 2))
+                region = i * 3 + j
+                got_region = got[:, region * 4:(region + 1) * 4]
+                assert torch.allclose(got_region, expected, atol=1e-6), f"S={S} region ({i},{j})"
+
+
+def test_head_version_3_shapes_and_forward_both_sizes():
+    m = build_model("tiny", head_version=3)
+    assert m.head_version == 3
     for S, B in ((9, 3), (19, 2)):
         sp = torch.from_numpy(np.random.default_rng(S).integers(0, 2, size=(B, S, S, 32)).astype(np.uint8))
         g = torch.zeros(B, 4)

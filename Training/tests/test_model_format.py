@@ -195,12 +195,12 @@ def test_failed_rename_keeps_old_model(model, tmp_path, monkeypatch):
     assert not [p for p in os.listdir(tmp_path) if p.startswith(".export-")]
 
 
-@pytest.mark.parametrize("hv", [1, 2])
+@pytest.mark.parametrize("hv", [1, 2, 3])
 def test_head_versions_roundtrip_and_shapes(tmp_path, hv):
     from ichigo_train.model import global_input_size, head_shapes
     m = build_model("tiny", head_version=hv)
     assert tuple(m.heads["Wglobal"].shape) == (global_input_size(64, hv), 128)
-    assert global_input_size(64, 1) == 132 and global_input_size(64, 2) == 197
+    assert global_input_size(64, 1) == 132 and global_input_size(64, 2) == 197 and global_input_size(64, 3) == 773
     out = tmp_path / f"m{hv}.ichigo"
     export_model(m, str(out), [9])
     loaded = MF.read_model(str(out))
@@ -210,9 +210,12 @@ def test_head_versions_roundtrip_and_shapes(tmp_path, hv):
     sp, g = _inputs()
     a, b = m.forward_hard(sp, g), m2.forward_hard(sp, g)
     assert torch.equal(a["wdl_logits"], b["wdl_logits"])
-    # a v2 manifest with v1-shaped Wglobal must be rejected
-    _corrupt(str(out), lambda mm: mm.__setitem__("headVersion", 3 - hv))
+    # a manifest whose headVersion doesn't match its Wglobal shape must be rejected (all three
+    # global_input_size(64, .) values -- 132/197/773 -- are distinct, so any cyclic relabelling
+    # is a genuine shape mismatch).
+    other_hv = hv % 3 + 1
+    _corrupt(str(out), lambda mm: mm.__setitem__("headVersion", other_hv))
     with pytest.raises(MF.ModelFormatError):
         MF.read_model(str(out))
     with pytest.raises(ValueError):
-        build_model("tiny", head_version=3)
+        build_model("tiny", head_version=4)

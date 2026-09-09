@@ -80,6 +80,68 @@ final class EvaluationAdapterTests: XCTestCase {
         try await ev.preWarm(size: 9)
     }
 
+    // MARK: - ValueSource (docs/spec/03-engine.md §3-4 "値ソース")
+
+    /// Hand-computed per the task spec: black to move, Σownership=+10, komi 7 → komiSelf=-7 →
+    /// score_est=3 → value_own=sigmoid((3+1)/6), in the to-move (black) perspective.
+    func testOwnershipValueHandComputedBlackToMove() {
+        let legal = [UInt8](repeating: 1, count: 82)
+        var own = [Float](repeating: 0, count: 81)
+        own[0] = 10  // Σownership == 10 exactly
+        let e = LogicEvaluation(policy: [Float](repeating: 1 / 82, count: 82), winDrawLoss: [0.5, 0, 0.5], expectedResult: 0.5, scoreMean: 0, ownership: own)
+        let w = EvaluationAdapter.toWhite(e, toMove: .black, legal: legal, komi: 7, valueSource: .ownership(k: 6, b: 1))
+        let expectedOwnBlack: Float = 1 / (1 + exp(-(3 + 1) / 6))
+        XCTAssertEqual(w.whiteExpected, 1 - expectedOwnBlack, accuracy: 1e-6)  // black to move: whiteExpected = 1 - toMoveExpected
+        XCTAssertEqual(w.whiteWinValue, 2 * (1 - expectedOwnBlack) - 1, accuracy: 1e-6)
+        XCTAssertEqual(w.whiteScoreMean, -3, accuracy: 1e-6)   // score lead: sign(black=-1) * score_est(3)
+        XCTAssertEqual(w.whiteLead, -3, accuracy: 1e-6)
+        // raw NN WDL is always kept, regardless of value source.
+        XCTAssertEqual(w.rawWinDrawLoss, [0.5, 0, 0.5])
+    }
+
+    /// The same position from white's perspective: score_est's komiSelf flips sign.
+    func testOwnershipValueHandComputedWhiteToMove() {
+        let legal = [UInt8](repeating: 1, count: 82)
+        var own = [Float](repeating: 0, count: 81)
+        own[0] = 10
+        let e = LogicEvaluation(policy: [Float](repeating: 1 / 82, count: 82), winDrawLoss: [0.5, 0, 0.5], expectedResult: 0.5, scoreMean: 0, ownership: own)
+        let w = EvaluationAdapter.toWhite(e, toMove: .white, legal: legal, komi: 7, valueSource: .ownership(k: 6, b: 1))
+        // score_est = 10 + 7 = 17 → value_own = sigmoid((17+1)/6), toMove == white so whiteExpected == toMoveExpected.
+        let expectedOwnWhite: Float = 1 / (1 + exp(-(17 + 1) / 6))
+        XCTAssertEqual(w.whiteExpected, expectedOwnWhite, accuracy: 1e-6)
+        XCTAssertEqual(w.whiteScoreMean, 17, accuracy: 1e-6)
+    }
+
+    /// `.blend(weightNetwork: 1, ...)` must reduce exactly to `.network`'s value/win fields;
+    /// `.blend(weightNetwork: 0, ...)` must reduce exactly to `.ownership`'s. Score lead always
+    /// follows the ownership estimate whenever mode != .network (documented in
+    /// `EvaluationAdapter.toWhite`), so it is checked against `.ownership`, not `.network`, for
+    /// both blend weights.
+    func testBlendWeightsReduceToPureModes() {
+        let legal = [UInt8](repeating: 1, count: 82)
+        for toMove: Player in [.black, .white] {
+            let e = eval(expected: 0.8, score: 3, own: 0.25)
+            let network = EvaluationAdapter.toWhite(e, toMove: toMove, legal: legal, komi: 7, valueSource: .network)
+            let ownership = EvaluationAdapter.toWhite(e, toMove: toMove, legal: legal, komi: 7, valueSource: .ownership(k: 6, b: 1))
+            let blendAllNetwork = EvaluationAdapter.toWhite(e, toMove: toMove, legal: legal, komi: 7, valueSource: .blend(weightNetwork: 1, k: 6, b: 1))
+            let blendAllOwnership = EvaluationAdapter.toWhite(e, toMove: toMove, legal: legal, komi: 7, valueSource: .blend(weightNetwork: 0, k: 6, b: 1))
+
+            XCTAssertEqual(blendAllNetwork.whiteExpected, network.whiteExpected, accuracy: 1e-6)
+            XCTAssertEqual(blendAllNetwork.whiteWinValue, network.whiteWinValue, accuracy: 1e-6)
+            XCTAssertEqual(blendAllOwnership.whiteExpected, ownership.whiteExpected, accuracy: 1e-6)
+            XCTAssertEqual(blendAllOwnership.whiteWinValue, ownership.whiteWinValue, accuracy: 1e-6)
+
+            // Score lead: both blend weights follow the ownership estimate, not the network's.
+            XCTAssertEqual(blendAllNetwork.whiteScoreMean, ownership.whiteScoreMean, accuracy: 1e-6)
+            XCTAssertEqual(blendAllOwnership.whiteScoreMean, ownership.whiteScoreMean, accuracy: 1e-6)
+            XCTAssertNotEqual(network.whiteScoreMean, ownership.whiteScoreMean)  // sanity: the two sources actually differ here
+
+            // Raw NN WDL is unaffected by mode.
+            XCTAssertEqual(blendAllNetwork.rawWinDrawLoss, network.rawWinDrawLoss)
+            XCTAssertEqual(blendAllOwnership.rawWinDrawLoss, network.rawWinDrawLoss)
+        }
+    }
+
     func testEvaluatorWithRealModel() async throws {
         let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Fixtures/parity/tiny-9/model.ichigo")

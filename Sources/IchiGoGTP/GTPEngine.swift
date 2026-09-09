@@ -59,6 +59,10 @@ public actor GTPEngine {
         boardSize = size
         komi = size == 9 ? IchiGoRules.defaultKomi9 : IchiGoRules.defaultKomi19
         game = try GameState(boardSize: size, komi: komi)
+        // Echoes the effective CLI-parsed config (docs/spec/03-engine.md §3-4 "値ソース") once at
+        // startup, so an operator diffing two `gtp` processes' logs (e.g. an A/B match) can
+        // confirm which value source each side actually ran with.
+        log("config: value-source=\(config.searchSettings.valueSource.logDescription) visits=\(config.visits)")
     }
 
     // MARK: - protocol plumbing
@@ -211,7 +215,10 @@ public actor GTPEngine {
             log("genmove clock: remaining=\(String(format: "%.3f", remaining)) budget=\(String(format: "%.3f", budget ?? 0)) actual=\(String(format: "%.3f", elapsed)) timedOut=\(outcome.timedOut)")
         }
         if let result = outcome.result {
-            log("genmove \(Coordinates.gtpString(outcome.move, size: boardSize)) visits=\(result.rootVisits) expected(draw=0.5)=\(String(format: "%.3f", result.searchExpected)) rawNN=\(String(format: "%.3f", result.rootRawExpected)) model=\(result.modelHash.prefix(12))")
+            // `rawNN` is e_nn (the network's own raw expected result, untouched by valueSource);
+            // `expected(draw=0.5)` is the search's backed-up value, which reflects `valueSource`
+            // when it is not `.network` (docs/spec/03-engine.md §3-4 "値ソース").
+            log("genmove \(Coordinates.gtpString(outcome.move, size: boardSize)) visits=\(result.rootVisits) expected(draw=0.5)=\(String(format: "%.3f", result.searchExpected)) rawNN=\(String(format: "%.3f", result.rootRawExpected)) valueSource=\(config.searchSettings.valueSource.logDescription) model=\(result.modelHash.prefix(12))")
         } else {
             log("genmove \(Coordinates.gtpString(outcome.move, size: boardSize)) fallback (deadline watchdog fired) model=\(slot.modelHash.prefix(12))")
         }

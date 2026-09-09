@@ -14,6 +14,8 @@ final class MetalPackedBackendTests: XCTestCase {
     func testGateLayerParityTiny9() async throws { try await runGateSweep("tiny-9") }
     func testGateLayerParityTiny19() async throws { try await runGateSweep("tiny-19") }
     func testGateLayerParityHeadV1() async throws { try await runGateSweep("tiny-9-headv1") }
+    func testGateLayerParityHeadV3Tiny9() async throws { try await runGateSweep("tiny-9-headv3") }
+    func testGateLayerParityHeadV3Tiny19() async throws { try await runGateSweep("tiny-19-headv3") }
 
     private func runGateSweep(_ fixture: String) async throws {
         try requireMetal()
@@ -42,6 +44,16 @@ final class MetalPackedBackendTests: XCTestCase {
         let c = try ParityCase.load("tiny-9-headv1")
         XCTAssertEqual(c.model.manifest.headVersion, 1)
         try await runHeadsCase("tiny-9-headv1")
+    }
+    func testHeadsWithinToleranceHeadV3Tiny9() async throws {
+        let c = try ParityCase.load("tiny-9-headv3")
+        XCTAssertEqual(c.model.manifest.headVersion, 3)
+        try await runHeadsCase("tiny-9-headv3")
+    }
+    func testHeadsWithinToleranceHeadV3Tiny19() async throws {
+        let c = try ParityCase.load("tiny-19-headv3")
+        XCTAssertEqual(c.model.manifest.headVersion, 3)
+        try await runHeadsCase("tiny-19-headv3")
     }
 
     private func runHeadsCase(_ fixture: String) async throws {

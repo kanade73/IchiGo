@@ -14,6 +14,11 @@ using namespace metal;
 // variable-length one (Metal has no VLAs).
 #define LOCAL_HIDDEN 64
 #define GLOBAL_HIDDEN 128
+// headVersion 3 (docs/spec/01-network.md §4): a 3x3 grid of regions covering the board; zreg
+// flattens to REGION_COUNT*LOCAL_HIDDEN = 9*64 = 576 values, region (i,j) at i*REGION_GRID+j.
+#define REGION_GRID 3
+#define REGION_COUNT 9
+#define REGION_HIDDEN 576
 
 // Step 1/3: m_c = mean_xy(h_c), v_c = max_xy(h_c) per (batch, channel), read directly from the
 // packed bit tensor. One thread per (c, b).
@@ -124,12 +129,16 @@ kernel void heads_local(
     for (int j = 0; j < LOCAL_HIDDEN; j++) zBuf[zBase + j] = z[j];
 }
 
-// Step 3/3: global projection, one thread per batch sample. headVersion 2 first reduces `zbar =
+// Step 3/3: global projection, one thread per batch sample. headVersion 2/3 first reduce `zbar =
 // mean_xy(z_xy)` and `ownMean = mean_xy(ownership)` from `heads_local`'s per-point outputs (B is
 // small -- at most a few hundred -- so this per-thread P-length reduction is cheap relative to
-// the C*128 projection below; it avoids a fourth kernel/dispatch).
+// the C*128 projection below; it avoids a fourth kernel/dispatch). headVersion 3 additionally
+// reduces `zreg` (the mean of z_xy over each cell of a 3x3 grid of regions, docs/spec/01-network.md
+// §4) in the SAME single pass over P, using integer region boundaries derived from S (matching
+// `ichigo_train.model.region_bounds` / `Heads.regionBounds`: bounds[i] = (i*S)/REGION_GRID).
 //   u_global = concat(m, v, global)                          // 2C+4   (headVersion 1)
 //   u_global = concat(m, v, zbar, ownMean, global)            // 2C+69  (headVersion 2)
+//   u_global = concat(m, v, zbar, zreg, ownMean, global)      // 2C+645 (headVersion 3)
 //   z_global = ReLU(u_global @ Wglobal + bglobal)             // 128
 //   passLogit = z_global @ Wpass + bpass
 //   wdlLogits = z_global @ Wwdl + bwdl                        // 3
@@ -138,8 +147,8 @@ kernel void heads_local(
 kernel void heads_global(
     device const float* mIn        [[buffer(0)]],
     device const float* vIn        [[buffer(1)]],
-    device const float* zBuf       [[buffer(2)]], // [B,P,LOCAL_HIDDEN], headVersion 2 only
-    device const float* ownership  [[buffer(3)]], // [B,P], headVersion 2 only
+    device const float* zBuf       [[buffer(2)]], // [B,P,LOCAL_HIDDEN], headVersion 2/3 only
+    device const float* ownership  [[buffer(3)]], // [B,P], headVersion 2/3 only
     device const float* globalIn   [[buffer(4)]],
     device const float* Wglobal    [[buffer(5)]],
     device const float* bglobal    [[buffer(6)]],
@@ -165,15 +174,44 @@ kernel void heads_global(
 
     float zbar[LOCAL_HIDDEN];
     float ownMean = 0.0f;
-    if (headVersion == 2) {
+    float zreg[REGION_HIDDEN];
+    if (headVersion == 2 || headVersion == 3) {
         for (int j = 0; j < LOCAL_HIDDEN; j++) zbar[j] = 0.0f;
+        // Region boundaries for this S: bounds[i] = (i*S)/REGION_GRID (integer division floors
+        // for non-negative operands), so region row/col counts are (bounds[i+1]-bounds[i]).
+        const int b1 = S / REGION_GRID;
+        const int b2 = (2 * S) / REGION_GRID;
+        const int bounds[REGION_GRID + 1] = {0, b1, b2, S};
+        if (headVersion == 3) {
+            for (int r = 0; r < REGION_HIDDEN; r++) zreg[r] = 0.0f;
+        }
         for (int p = 0; p < P; p++) {
             const int zBase = (b * P + p) * LOCAL_HIDDEN;
             for (int j = 0; j < LOCAL_HIDDEN; j++) zbar[j] += zBuf[zBase + j];
             ownMean += ownership[b * P + p];
+            if (headVersion == 3) {
+                const int y = p / S;
+                const int x = p % S;
+                const int ri = (y < b1) ? 0 : ((y < b2) ? 1 : 2);
+                const int ci = (x < b1) ? 0 : ((x < b2) ? 1 : 2);
+                const int region = ri * REGION_GRID + ci;
+                const int regionBase = region * LOCAL_HIDDEN;
+                for (int j = 0; j < LOCAL_HIDDEN; j++) zreg[regionBase + j] += zBuf[zBase + j];
+            }
         }
         for (int j = 0; j < LOCAL_HIDDEN; j++) zbar[j] /= float(P);
         ownMean /= float(P);
+        if (headVersion == 3) {
+            for (int ri = 0; ri < REGION_GRID; ri++) {
+                const int rows = bounds[ri + 1] - bounds[ri];
+                for (int ci = 0; ci < REGION_GRID; ci++) {
+                    const int cols = bounds[ci + 1] - bounds[ci];
+                    const float area = float(rows * cols);
+                    const int regionBase = (ri * REGION_GRID + ci) * LOCAL_HIDDEN;
+                    for (int j = 0; j < LOCAL_HIDDEN; j++) zreg[regionBase + j] /= area;
+                }
+            }
+        }
     }
 
     float acc[GLOBAL_HIDDEN];
@@ -195,7 +233,7 @@ kernel void heads_global(
             const int row = (2 * C + i) * GLOBAL_HIDDEN;
             for (int j = 0; j < GLOBAL_HIDDEN; j++) acc[j] += gval * Wglobal[row + j];
         }
-    } else {
+    } else if (headVersion == 2) {
         for (int jz = 0; jz < LOCAL_HIDDEN; jz++) {
             const float zval = zbar[jz];
             const int row = (2 * C + jz) * GLOBAL_HIDDEN;
@@ -208,6 +246,26 @@ kernel void heads_global(
         for (int i = 0; i < 4; i++) {
             const float gval = globalIn[b * 4 + i];
             const int row = (2 * C + LOCAL_HIDDEN + 1 + i) * GLOBAL_HIDDEN;
+            for (int j = 0; j < GLOBAL_HIDDEN; j++) acc[j] += gval * Wglobal[row + j];
+        }
+    } else { // headVersion == 3: concat(m, v, zbar, zreg, ownMean, global)
+        for (int jz = 0; jz < LOCAL_HIDDEN; jz++) {
+            const float zval = zbar[jz];
+            const int row = (2 * C + jz) * GLOBAL_HIDDEN;
+            for (int j = 0; j < GLOBAL_HIDDEN; j++) acc[j] += zval * Wglobal[row + j];
+        }
+        for (int jr = 0; jr < REGION_HIDDEN; jr++) {
+            const float zval = zreg[jr];
+            const int row = (2 * C + LOCAL_HIDDEN + jr) * GLOBAL_HIDDEN;
+            for (int j = 0; j < GLOBAL_HIDDEN; j++) acc[j] += zval * Wglobal[row + j];
+        }
+        {
+            const int row = (2 * C + LOCAL_HIDDEN + REGION_HIDDEN) * GLOBAL_HIDDEN;
+            for (int j = 0; j < GLOBAL_HIDDEN; j++) acc[j] += ownMean * Wglobal[row + j];
+        }
+        for (int i = 0; i < 4; i++) {
+            const float gval = globalIn[b * 4 + i];
+            const int row = (2 * C + LOCAL_HIDDEN + REGION_HIDDEN + 1 + i) * GLOBAL_HIDDEN;
             for (int j = 0; j < GLOBAL_HIDDEN; j++) acc[j] += gval * Wglobal[row + j];
         }
     }

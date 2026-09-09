@@ -44,6 +44,7 @@ extension Heads {
         let P = S * S
         let H1 = ModelManifest.localHidden   // 64, fixed regardless of channels/headVersion
         let H2 = ModelManifest.globalHidden  // 128
+        let regionHidden = ModelManifest.regionHidden // 576 = 9*64, headVersion 3 only
         let headVersion = model.manifest.headVersion
 
         let Wlocal = model.head("Wlocal"), blocal = model.head("blocal")
@@ -142,10 +143,10 @@ extension Heads {
         }
         for i in 0 ..< (B * P) { ownership[i] = tanh(ownership[i] + bowner) }
 
-        // zbar = mean_xy(z_xy), ownMean = mean_xy(ownership) -- headVersion 2 only.
+        // zbar = mean_xy(z_xy), ownMean = mean_xy(ownership) -- headVersion 2, 3 only.
         var zbar = [Float](repeating: 0, count: B * H1)
         var ownMean = [Float](repeating: 0, count: B)
-        if headVersion == 2 {
+        if headVersion == 2 || headVersion == 3 {
             z.withUnsafeBufferPointer { zb in
                 zbar.withUnsafeMutableBufferPointer { zbarBuf in
                     for b in 0 ..< B {
@@ -161,6 +162,46 @@ extension Heads {
                 var s: Float = 0
                 for p in 0 ..< P { s += ownership[b * P + p] }
                 ownMean[b] = s / Float(P)
+            }
+        }
+
+        // zreg = per-3x3-region mean_xy(z_xy) -- headVersion 3 only (docs/spec/01-network.md §4).
+        // Plain nested loops (not BLAS), same style as the m/v reduction above: this is a spatial
+        // reduce, not a projection.
+        var zreg = [Float](repeating: 0, count: B * regionHidden)
+        if headVersion == 3 {
+            let bounds = Heads.regionBounds(S)
+            var regionOfIndex = [Int](repeating: 0, count: S)
+            for r in 0 ..< ModelManifest.regionGrid {
+                for v in bounds[r] ..< bounds[r + 1] { regionOfIndex[v] = r }
+            }
+            var regionArea = [Float](repeating: 0, count: ModelManifest.regionCount)
+            for ri in 0 ..< ModelManifest.regionGrid {
+                for ci in 0 ..< ModelManifest.regionGrid {
+                    regionArea[ri * ModelManifest.regionGrid + ci] = Float((bounds[ri + 1] - bounds[ri]) * (bounds[ci + 1] - bounds[ci]))
+                }
+            }
+            z.withUnsafeBufferPointer { zb in
+                zreg.withUnsafeMutableBufferPointer { zregBuf in
+                    for b in 0 ..< B {
+                        for y in 0 ..< S {
+                            let ri = regionOfIndex[y]
+                            for x in 0 ..< S {
+                                let ci = regionOfIndex[x]
+                                let region = ri * ModelManifest.regionGrid + ci
+                                let p = y * S + x
+                                let zRow = (b * P + p) * H1
+                                let outBase = b * regionHidden + region * H1
+                                for j in 0 ..< H1 { zregBuf[outBase + j] += zb[zRow + j] }
+                            }
+                        }
+                        for region in 0 ..< ModelManifest.regionCount {
+                            let area = regionArea[region]
+                            let outBase = b * regionHidden + region * H1
+                            for j in 0 ..< H1 { zregBuf[outBase + j] /= area }
+                        }
+                    }
+                }
             }
         }
 
@@ -180,7 +221,7 @@ extension Heads {
                 features.global.withUnsafeBufferPointer { g in
                     ZG.withUnsafeMutableBufferPointer { zg in sgemm(g.baseAddress!, w.baseAddress! + 2 * C * H2, zg.baseAddress!, m: B, k: 4, n: H2, beta: 1) }
                 }
-            } else {
+            } else if headVersion == 2 {
                 zbar.withUnsafeBufferPointer { zbarBuf in
                     ZG.withUnsafeMutableBufferPointer { zg in sgemm(zbarBuf.baseAddress!, w.baseAddress! + 2 * C * H2, zg.baseAddress!, m: B, k: H1, n: H2, beta: 1) }
                 }
@@ -189,6 +230,19 @@ extension Heads {
                 }
                 features.global.withUnsafeBufferPointer { g in
                     ZG.withUnsafeMutableBufferPointer { zg in sgemm(g.baseAddress!, w.baseAddress! + (2 * C + H1 + 1) * H2, zg.baseAddress!, m: B, k: 4, n: H2, beta: 1) }
+                }
+            } else { // headVersion 3: concat(m, v, zbar, zreg, ownMean, global)
+                zbar.withUnsafeBufferPointer { zbarBuf in
+                    ZG.withUnsafeMutableBufferPointer { zg in sgemm(zbarBuf.baseAddress!, w.baseAddress! + 2 * C * H2, zg.baseAddress!, m: B, k: H1, n: H2, beta: 1) }
+                }
+                zreg.withUnsafeBufferPointer { zregBuf in
+                    ZG.withUnsafeMutableBufferPointer { zg in sgemm(zregBuf.baseAddress!, w.baseAddress! + (2 * C + H1) * H2, zg.baseAddress!, m: B, k: regionHidden, n: H2, beta: 1) }
+                }
+                ownMean.withUnsafeBufferPointer { ownBuf in
+                    ZG.withUnsafeMutableBufferPointer { zg in sgemm(ownBuf.baseAddress!, w.baseAddress! + (2 * C + H1 + regionHidden) * H2, zg.baseAddress!, m: B, k: 1, n: H2, beta: 1) }
+                }
+                features.global.withUnsafeBufferPointer { g in
+                    ZG.withUnsafeMutableBufferPointer { zg in sgemm(g.baseAddress!, w.baseAddress! + (2 * C + H1 + regionHidden + 1) * H2, zg.baseAddress!, m: B, k: 4, n: H2, beta: 1) }
                 }
             }
         }

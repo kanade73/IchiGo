@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p7-wide512-local-headv3-200k",
+      "gpu": 6,
+      "config": "configs/experiments/phase7/p7-wide512-local-headv3-200k.json",
+      "out": "runs/p7-wide512-local-headv3-200k"
+    },
+    {
+      "runId": "p7-small-local-headv3-100k",
+      "gpu": 7,
+      "config": "configs/experiments/phase7/p7-small-local-headv3-100k.json",
+      "out": "runs/p7-small-local-headv3-100k"
+    }
+  ]
+}

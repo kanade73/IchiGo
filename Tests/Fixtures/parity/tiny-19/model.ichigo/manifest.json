@@ -154,6 +154,9 @@
   "layout": "NHWC",
   "rulesId": "cgos-area-psk-v1",
   "trainingProvenance": {
+    "calibration": {
+      "status": "unverified"
+    },
     "generatedAt": "fixed-for-reproducibility",
     "profile": "tiny",
     "purpose": "parity fixture",

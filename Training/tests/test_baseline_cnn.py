@@ -8,7 +8,7 @@ import torch
 from ichigo_train import losses as L
 from ichigo_train.baseline_cnn import BaselineCNN
 from ichigo_train.metrics import gate_statistics
-from ichigo_train.model import HEAD_TENSOR_NAMES, head_shapes
+from ichigo_train.model import HEAD_TENSOR_NAMES, global_input_size, head_shapes
 from ichigo_train.optim import build_optimizer, clip_gradients
 
 
@@ -60,6 +60,31 @@ def test_head_version_1_matches_v1_shapes():
     shapes = head_shapes(8, 1)
     for n in HEAD_TENSOR_NAMES:
         assert tuple(m.heads[n].shape) == shapes[n]
+
+
+def test_baseline_cnn_head_version_2_unaffected_by_headv3_addition():
+    """Adding headVersion 3 (docs/spec/01-network.md §4, zreg) must not change BaselineCNN's
+    default (headVersion 2) shapes, tensor count, or global_input_size formula."""
+    m = BaselineCNN(channels=8, num_blocks=1, seed=7, head_version=2)
+    shapes = head_shapes(8, 2)
+    for n in HEAD_TENSOR_NAMES:
+        assert tuple(m.heads[n].shape) == shapes[n]
+    assert m.head_version == 2
+    assert global_input_size(8, 2) == 2 * 8 + 64 + 1 + 4 == 85
+
+
+def test_baseline_cnn_head_version_3_also_works_via_shared_head_shapes():
+    """BaselineCNN has no headVersion-specific code of its own -- it reuses model.head_shapes /
+    LogicNet.heads_forward, so headVersion 3 works automatically once SUPPORTED_HEAD_VERSIONS
+    includes it. Not required by 04-tasks.md T33 (the CNN baseline is a diagnostic for the
+    logic-gate network specifically), but nothing should stop it."""
+    m = BaselineCNN(channels=8, num_blocks=1, seed=8, head_version=3)
+    shapes = head_shapes(8, 3)
+    for n in HEAD_TENSOR_NAMES:
+        assert tuple(m.heads[n].shape) == shapes[n]
+    sp = torch.from_numpy(np.random.default_rng(9).integers(0, 2, size=(2, 9, 9, 32)).astype(np.uint8))
+    out = m.forward(sp, torch.zeros(2, 4))
+    assert out["wdl_logits"].shape == (2, 3)
 
 
 def test_zero_size_theta_and_empty_gates():

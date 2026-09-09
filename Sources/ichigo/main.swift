@@ -64,9 +64,11 @@ commands:
                                  raw outputs and the post-processed evaluation as JSON; --dump-layers
                                  writes every logic layer's bits ([L,S,S,C] uint8) for parity checks
   gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|cpu-packed|metal|metal-packed|auto] [--visits N]
+      [--value-source network|ownership|blend] [--value-blend W] [--value-k K] [--value-b B]
                                  GTP engine on stdin/stdout (logs on stderr); at least one model
   selfplay --model PATH --games N --out DIR --seed N [--visits N] [--size 9|19]
            [--backend cpu|cpu-packed|metal|metal-packed|auto]
+           [--value-source network|ownership|blend] [--value-blend W] [--value-k K] [--value-b B]
                                  self-play with the model on both sides; writes SGF + root visit
                                  targets (JSONL) per game
   features --sgf-dir DIR --out FILE --size 9|19 [--rules cgos-area-psk-v1] [--komi K]
@@ -87,6 +89,13 @@ CPU gates + accelerated CPU heads), metal (byte gates on GPU + accelerated CPU h
 metal-packed (batch-packed gates + heads, both on GPU). --backend auto picks metal if a Metal
 device is available, else cpu. --backend metal/metal-packed with no device is a usage error
 (exit 2), never a silent fallback.
+
+value-source (docs/spec/03-engine.md §3-4): --value-source network (default) keeps the logic
+network's own wdl head. ownership derives the search's leaf value from the ownership head instead
+(value_own = sigmoid((score_est + b) / k), score_est = sum of ownership + signed komi); blend uses
+weightNetwork*e_nn + (1-weightNetwork)*value_own. --value-blend sets weightNetwork (default 0.5),
+--value-k/--value-b set k/b (defaults 6, 1.0). The raw network WDL is always kept and logged
+alongside the search value regardless of this setting.
 """
 
 /// cpu -> ScalarBackend, cpu-packed -> PackedCPUBackend, metal -> MetalBackend, metal-packed ->
@@ -295,6 +304,17 @@ func cmdEval(_ args: Args) async {
     }
 }
 
+/// Shared by `gtp` and `selfplay`: `--value-source`/`--value-blend`/`--value-k`/`--value-b`
+/// (docs/spec/03-engine.md §3-4 "値ソース"). Parsing itself lives in `ValueSourceFlags`
+/// (`IchiGoGTP`, unit-tested there) so this is just the usage-error plumbing.
+func parseValueSource(_ args: Args) -> ValueSource {
+    do {
+        return try ValueSourceFlags.parse(source: args.options["value-source"], blend: args.options["value-blend"], k: args.options["value-k"], b: args.options["value-b"])
+    } catch {
+        fail("\(error)", .usage)
+    }
+}
+
 func makeSlots(_ args: Args) -> [Int: GTPEngine.ModelSlot] {
     let backendName = args.options["backend"] ?? "auto"
     guard ["cpu", "cpu-packed", "metal", "metal-packed", "auto"].contains(backendName) else {
@@ -324,6 +344,7 @@ func cmdGTP(_ args: Args) async {
     var cfg = GTPEngine.Config()
     cfg.visits = args.options["visits"].flatMap(Int.init) ?? 100
     cfg.defaultBoardSize = slots[9] != nil ? 9 : 19
+    cfg.searchSettings.valueSource = parseValueSource(args)
     let engine: GTPEngine
     do {
         engine = try GTPEngine(models: slots, config: cfg, log: { msg in FileHandle.standardError.write(("[ichigo] " + msg + "\n").data(using: .utf8)!) })
@@ -341,9 +362,11 @@ func cmdSelfplay(_ args: Args) async {
     guard let slot = slots[size] else { fail("no model for size \(size)", .usage) }
     try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
     let komi = size == 9 ? IchiGoRules.defaultKomi9 : IchiGoRules.defaultKomi19
+    var settings = SearchSettings()
+    settings.valueSource = parseValueSource(args)
     do {
             for g in 0 ..< games {
-                let record = try await SelfPlay.playGame(slot: slot, size: size, komi: komi, visits: visits, seed: seed &+ UInt64(g), maxMoves: 4 * size * size)
+                let record = try await SelfPlay.playGame(slot: slot, size: size, komi: komi, visits: visits, seed: seed &+ UInt64(g), maxMoves: 4 * size * size, settings: settings)
                 let base = (outDir as NSString).appendingPathComponent(String(format: "game-%05d", g))
                 try record.sgf.write(toFile: base + ".sgf", atomically: true, encoding: .utf8)
                 try record.targetsJSONL.write(toFile: base + ".targets.jsonl", atomically: true, encoding: .utf8)

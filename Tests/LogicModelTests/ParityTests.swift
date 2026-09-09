@@ -13,6 +13,17 @@ final class ParityTests: XCTestCase {
         XCTAssertEqual(c.model.manifest.headVersion, 1)
         try runCase("tiny-9-headv1")
     }
+    /// headVersion 3 model (global head = concat(m, v, zbar, zreg, ownMean, global)) must load and match.
+    func testTiny9HeadV3() throws {
+        let c = try ParityCase.load("tiny-9-headv3")
+        XCTAssertEqual(c.model.manifest.headVersion, 3)
+        try runCase("tiny-9-headv3")
+    }
+    func testTiny19HeadV3() throws {
+        let c = try ParityCase.load("tiny-19-headv3")
+        XCTAssertEqual(c.model.manifest.headVersion, 3)
+        try runCase("tiny-19-headv3")
+    }
 
     private func runCase(_ name: String) throws {
         let c = try ParityCase.load(name)

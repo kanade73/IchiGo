@@ -21,6 +21,12 @@ public struct SearchSettings: Sendable {
     public var leafBatch: Int = 8
     public var treeReuse: Bool = true
     public var virtualLossValue: Double = -1   // white value assumed for a reserved (in-flight) edge, in the parent's view
+    /// Leaf value source (docs/spec/03-engine.md §3-4 "値ソース"). `.network` (default) keeps the
+    /// current behaviour (the NN's own wdl head, unmodified). `.ownership`/`.blend` route leaf
+    /// expansion through `EvaluationAdapter.toWhite`'s ownership-derived value instead of, or
+    /// blended with, the network's. `SearchResult.rootRawExpected`/`rootRawWinDrawLoss` always
+    /// reflect the raw network output regardless of this setting.
+    public var valueSource: ValueSource = .network
 
     public init() {}
 }
@@ -360,7 +366,7 @@ public actor Search {
     }
 
     private func expand(_ node: SearchNode, snapshot: PositionSnapshot, evaluation e: LogicEvaluation) {
-        let w = EvaluationAdapter.toWhite(e, snapshot: snapshot)
+        let w = EvaluationAdapter.toWhite(e, snapshot: snapshot, valueSource: settings.valueSource)
         node.evaluated = true
         node.nnWhiteValue = Double(w.whiteWinValue)
         node.nnWhiteScore = Double(w.whiteScoreMean)

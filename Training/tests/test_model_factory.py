@@ -60,6 +60,17 @@ def test_logic_channels_and_dilations_overrides():
         assert tuple(m.heads[n].shape) == shapes[n]
 
 
+def test_logic_head_version_3_override():
+    """model_factory's default stays headVersion 2 (test_logic_default_matches_profile above);
+    headVersion 3 is reachable via the same headVersion config key as headVersion 1."""
+    cfg = base_cfg(profile="tiny", headVersion=3)
+    m = build_model_from_config(cfg)
+    assert m.head_version == 3
+    shapes = head_shapes(m.channels, 3)
+    for n in HEAD_TENSOR_NAMES:
+        assert tuple(m.heads[n].shape) == shapes[n]
+
+
 def test_logic_wiring_seed_and_bank1_ratio_reach_the_spec():
     cfg = base_cfg(wiringSeed=7, bank1Ratio=0.3)
     m = build_model_from_config(cfg)

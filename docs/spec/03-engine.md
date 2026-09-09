@@ -66,6 +66,8 @@ RinGo NNOutputの互換フィールドは `whiteWinProb=whiteExpected`、`whiteL
 `whiteLead=whiteScoreMean=whiteScore`。互換上必須の `whiteScoreMeanSq=whiteScore*whiteScore`、varTimeLeft/shortterm errors=0。これらは未推定であるため、分散・誤差を利用する探索機能はcapabilityで禁止する。値0を「高確信」と解釈させない。
 policyの互換層だけはRinGoの違法手sentinel=-1に変換する。LogicModel/学習データは違法手0を維持する。
 
+**値ソース (value source)**: `EvaluationAdapter.toWhite`は`e`（NN wdl由来のexpectedResult/scoreMean）をそのまま使う`.network`（既定）に加え、`ValueSource`で差し替え可能にする。診断（docs/implementation-status.md 2026-09-10 03:30）でNNのwdl headが9路で弱く、ownership headから求めた`value_own = sigmoid((score_est+b)/k)`（`score_est = Σ_xy ownership_xy + komiSelf`、`komiSelf = toMoveが白ならkomi、黒なら-komi`、`k=6,b=1.0`が9路のフィット値）がNN head相当のexpected結果MAEに達すると分かったため。`.ownership(k,b)`はexpectedResultを`value_own`に置き換え、`.blend(weightNetwork,k,b)`は`weightNetwork*e_nn + (1-weightNetwork)*value_own`を使う（`e_nn`はNNのexpectedResult、to-move視点）。探索・解析が読むscore lead（`whiteScoreMean`/`whiteLead`）は`.network`以外なら常にownership由来の`score_est`を採用し、blendの重みには従わない（valueだけがblendされる）。`rawWinDrawLoss`とroot rawExpected（`SearchResult.rootRawExpected`）はモードに関わらず常にNN生出力を保持し、GTPログは`rawNN=`（e_nn）と`expected(draw=0.5)=`（探索が実際にbackupした値）の両方、および設定中の`valueSource`を出す。PUCTが要求するのは白視点で一貫した`[0,1]`の期待得点だけなので（本節冒頭の変換規則）、値の出処をNNのwdl headに限定する必要はない。CLIは`ichigo gtp`/`ichigo selfplay`双方に`--value-source network|ownership|blend`、`--value-blend W`（既定0.5）、`--value-k`/`--value-b`（既定6/1.0）を追加し、match runnerのargvにもそのまま渡せる。
+
 ## 4. 探索 v1
 
 初期はpure-tree PUCT、score utility係数=0、win/loss utility係数=1、no-result utility=0。graph/transposition merge、LCB、uncertaintyによる重み付け、dynamic score utility、ponder、opening bookはoff。tree reuseとleaf batchは早期に有効化する。これらの停止は無学習の補助値を使わないための初期範囲であり、ルール合法性を緩めるものではない。

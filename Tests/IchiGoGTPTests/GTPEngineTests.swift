@@ -145,6 +145,36 @@ final class GTPEngineTests: XCTestCase {
         }
     }
 
+    // MARK: - value source CLI flags (docs/spec/03-engine.md §3-4 "値ソース")
+
+    func testValueSourceFlagsParsing() throws {
+        XCTAssertEqual(try ValueSourceFlags.parse(source: nil, blend: nil, k: nil, b: nil), .network)
+        XCTAssertEqual(try ValueSourceFlags.parse(source: "network", blend: "0.9", k: "3", b: "2"), .network)  // ignored for network mode
+        XCTAssertEqual(try ValueSourceFlags.parse(source: "ownership", blend: nil, k: "8", b: "2"), .ownership(k: 8, b: 2))
+        XCTAssertEqual(try ValueSourceFlags.parse(source: "ownership", blend: nil, k: nil, b: nil), .ownership(k: 6, b: 1))  // defaults
+        XCTAssertEqual(try ValueSourceFlags.parse(source: "blend", blend: "0.3", k: nil, b: nil), .blend(weightNetwork: 0.3, k: 6, b: 1))
+        XCTAssertEqual(try ValueSourceFlags.parse(source: "blend", blend: nil, k: nil, b: nil), .blend(weightNetwork: 0.5, k: 6, b: 1))  // default weight
+        XCTAssertThrowsError(try ValueSourceFlags.parse(source: "bogus", blend: nil, k: nil, b: nil)) { error in
+            XCTAssertEqual(error as? ValueSourceFlagError, .unknownSource("bogus"))
+        }
+    }
+
+    /// The CLI-parsed value source must be echoed to the GTP log, both once at startup and on
+    /// every genmove (alongside e_nn/`rawNN=`), so an operator can confirm what an A/B match's two
+    /// `gtp` processes actually ran with.
+    func testValueSourceIsEchoedInStartupAndGenmoveLog() async throws {
+        var cfg = GTPEngine.Config(); cfg.visits = 4
+        cfg.searchSettings.valueSource = try ValueSourceFlags.parse(source: "ownership", blend: nil, k: "8", b: "2")
+        let slot = GTPEngine.ModelSlot(evaluator: UniformEvaluator(sizes: [9]), modelHash: "fake-9")
+        let logs = LogCapture()
+        let e = try GTPEngine(models: [9: slot], config: cfg, log: { logs.append($0) })
+        XCTAssertTrue(logs.snapshot().contains { $0.contains("value-source=ownership(k=8.0,b=2.0)") })
+
+        let r = await e.handle(line: "genmove b")
+        XCTAssertTrue(r.hasPrefix("= "), r)
+        XCTAssertTrue(logs.snapshot().contains { $0.hasPrefix("genmove ") && $0.contains("rawNN=") && $0.contains("valueSource=ownership(k=8.0,b=2.0)") })
+    }
+
     // MARK: - T28 clock / watchdog
 
     /// docs/spec/03-engine.md §8: `time_left=0` must still produce a legal move quickly (the

@@ -18,7 +18,7 @@ public struct ModelManifest: Sendable, Equatable {
     public static let format = "ichigo.logic"
     public static let version = 1
     public static let featureVersion = 1
-    public static let supportedHeadVersions: Set<Int> = [1, 2]
+    public static let supportedHeadVersions: Set<Int> = [1, 2, 3]
     public static let rulesID = "cgos-area-psk-v1"
     public static let gateEncoding = "truth-table-lsb-2a-plus-b"
     public static let fileNames = ["wiring.i32", "gates.u8", "heads.f32"]
@@ -33,6 +33,11 @@ public struct ModelManifest: Sendable, Equatable {
     ]
     public static let localHidden = 64
     public static let globalHidden = 128
+    /// headVersion 3 (docs/spec/01-network.md §4): a 3x3 grid of regions covering the board;
+    /// `regionHidden` is `regionCount*localHidden` (9*64=576), the flattened size of `zreg`.
+    public static let regionGrid = 3
+    public static let regionCount = regionGrid * regionGrid
+    public static let regionHidden = regionCount * localHidden
 
     public let headVersion: Int
     public let boardSizes: [Int]
@@ -54,8 +59,13 @@ public struct ModelManifest: Sendable, Equatable {
 
     /// headVersion 1: u_global = concat(m, v, global) → 2C+4.
     /// headVersion 2: u_global = concat(m, v, mean_xy(z_xy)[64], mean_xy(ownership)[1], global) → 2C+69.
+    /// headVersion 3: u_global = concat(m, v, zbar[64], zreg[9*64=576], ownMean[1], global) → 2C+645.
     public static func globalInputSize(channels C: Int, headVersion: Int) -> Int {
-        headVersion == 1 ? 2 * C + 4 : 2 * C + localHidden + 1 + 4
+        switch headVersion {
+        case 1: return 2 * C + 4
+        case 2: return 2 * C + localHidden + 1 + 4
+        default: return 2 * C + localHidden + regionHidden + 1 + 4 // headVersion 3
+        }
     }
 
     public static func headShapes(channels C: Int, headVersion: Int) -> [String: [Int]] {

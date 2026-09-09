@@ -10,6 +10,8 @@ final class HeadsAcceleratedTests: XCTestCase {
     func testMatchesExplicitLoopTiny9() throws { try runCase("tiny-9") }
     func testMatchesExplicitLoopTiny19() throws { try runCase("tiny-19") }
     func testMatchesExplicitLoopHeadV1() throws { try runCase("tiny-9-headv1") }
+    func testMatchesExplicitLoopHeadV3Tiny9() throws { try runCase("tiny-9-headv3") }
+    func testMatchesExplicitLoopHeadV3Tiny19() throws { try runCase("tiny-19-headv3") }
 
     private func runCase(_ fixture: String) throws {
         let c = try ParityCase.load(fixture)

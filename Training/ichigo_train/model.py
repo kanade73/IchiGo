@@ -25,6 +25,9 @@ from .wiring import INPUT_CHANNELS, ModelSpec, Wiring, generate_wiring, generate
 HEAD_LOCAL = 64
 HEAD_GLOBAL = 128
 GLOBAL_FEATURES = 4
+REGION_GRID = 3                              # 3x3 regions (docs/spec/01-network.md §4, headVersion 3)
+REGION_COUNT = REGION_GRID * REGION_GRID     # 9
+REGION_FEATURES = REGION_COUNT * HEAD_LOCAL  # 576 = 9*64
 HEAD_TENSOR_NAMES = [
     "Wlocal", "blocal", "Wpolicy", "bpolicy", "Wowner", "bowner",
     "Wglobal", "bglobal", "Wpass", "bpass", "Wwdl", "bwdl", "Wscore", "bscore",
@@ -32,16 +35,45 @@ HEAD_TENSOR_NAMES = [
 
 
 HEAD_VERSION = 2
-SUPPORTED_HEAD_VERSIONS = (1, 2)
+SUPPORTED_HEAD_VERSIONS = (1, 2, 3)
 
 
 def global_input_size(channels: int, head_version: int = HEAD_VERSION) -> int:
-    """headVersion 1: concat(m, v, global) = 2C+4; headVersion 2: concat(m, v, zbar[64], ownMean[1], global) = 2C+69."""
+    """headVersion 1: concat(m, v, global) = 2C+4; headVersion 2: concat(m, v, zbar[64], ownMean[1],
+    global) = 2C+69; headVersion 3: concat(m, v, zbar[64], zreg[9*64=576], ownMean[1], global) =
+    2C+645."""
     if head_version == 1:
         return 2 * channels + GLOBAL_FEATURES
     if head_version == 2:
         return 2 * channels + HEAD_LOCAL + 1 + GLOBAL_FEATURES
+    if head_version == 3:
+        return 2 * channels + HEAD_LOCAL + REGION_FEATURES + 1 + GLOBAL_FEATURES
     raise ValueError(f"unsupported headVersion {head_version}")
+
+
+def region_bounds(size: int, parts: int = REGION_GRID) -> list[int]:
+    """Integer partition boundaries of a ``size``-point axis into ``parts`` contiguous, nearly
+    equal ranges (docs/spec/01-network.md §4): part ``i`` covers indices
+    ``[bounds[i], bounds[i+1])``. ``bounds[i] = (i*size)//parts``, so e.g. ``region_bounds(9) ==
+    [0,3,6,9]`` and ``region_bounds(19) == [0,6,12,19]``. Every part is non-empty for
+    ``size >= parts``."""
+    return [(i * size) // parts for i in range(parts + 1)]
+
+
+def regional_means(z: torch.Tensor) -> torch.Tensor:
+    """``z`` is ``[B,S,S,H]`` (row-major (y,x), NHWC); returns ``[B, 9*H]`` -- the mean of ``z``
+    over each cell of a 3x3 grid of regions (docs/spec/01-network.md §4), region ``(i,j)`` ordered
+    row-major as ``i*3+j`` with each region's ``H`` values contiguous. ``i`` indexes rows (dim 1,
+    y), ``j`` indexes columns (dim 2, x)."""
+    B, S, _, H = z.shape
+    bounds = region_bounds(S)
+    regions = []
+    for i in range(REGION_GRID):
+        r0, r1 = bounds[i], bounds[i + 1]
+        for j in range(REGION_GRID):
+            c0, c1 = bounds[j], bounds[j + 1]
+            regions.append(z[:, r0:r1, c0:c1, :].mean(dim=(1, 2)))
+    return torch.cat(regions, dim=1)
 
 
 def head_shapes(channels: int, head_version: int = HEAD_VERSION) -> dict[str, tuple[int, ...]]:
@@ -324,10 +356,15 @@ class LogicNet(nn.Module):
         ownership = torch.tanh(z @ H["Wowner"] + H["bowner"]).reshape(B, S * S)
         if self.head_version == 1:
             g_stats = local_stats
-        else:
+        elif self.head_version == 2:
             zbar = z.mean(dim=(1, 2))                       # [B,64]
             own_mean = ownership.mean(dim=1, keepdim=True)  # [B,1]
             g_stats = torch.cat([m, v, zbar, own_mean, glob], dim=1)  # [B, 2C+69]
+        else:  # headVersion 3
+            zbar = z.mean(dim=(1, 2))                       # [B,64]
+            zreg = regional_means(z)                        # [B,576]
+            own_mean = ownership.mean(dim=1, keepdim=True)  # [B,1]
+            g_stats = torch.cat([m, v, zbar, zreg, own_mean, glob], dim=1)  # [B, 2C+645]
         zg = torch.relu(g_stats @ H["Wglobal"] + H["bglobal"])
         pass_logit = zg @ H["Wpass"] + H["bpass"]  # [B,1]
         wdl = zg @ H["Wwdl"] + H["bwdl"]
