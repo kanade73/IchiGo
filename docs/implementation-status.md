@@ -421,3 +421,7 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - 4 GPU（NCCL、P2P 無効、microBatch 32 × 4 rank × accumulation 1 = 128）: 100 step 完走、0.035 秒/step、3,680 samples/秒。1 GPU 比 3.1 倍、scaling efficiency 0.78（1 GPU 0.109 秒/step、2 GPU 0.061 秒/step から算出。run-summary の throughputRatio は参照パスの解決不備で None のため手計算）。peak GPU memory rank0 620 MiB、他 239 MiB。
 - 同一 global batch の勾配一致は gloo 2 process の CPU テスト（SGD 代替、1e-5 以内）で確認。GPU 上の bit 一致は別指標（05 §3）で未実施。
 - M2a の 4GPU 学習検収は満たした。今後の実験は small モデルでは 1 GPU × 多構成が効率的（efficiency 0.78）で、DDP は base 以上の長時間ランに使う。
+
+### 2026-09-09 23:25 巡回
+
+- `p4-local-wide512-200k`（logic 最良、hard top1 0.390）: uniform baseline 100 局 100 勝、事故 0、Swift parity PASS、1.2 秒/手で約 4,100 visits（Metal auto）。実験は 4 本進行中（16 層×512、Gumbel base、learned-k ×2）、クラッシュなし。

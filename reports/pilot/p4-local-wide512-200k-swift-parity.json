@@ -1,0 +1,64 @@
+{
+  "model": "models/p4-local-wide512-200k.ichigo",
+  "count": 8,
+  "samples": [
+    {
+      "index": 0,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.814697265625e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 1,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 5.0067901611328125e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 2,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.933906555175781e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 3,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.814697265625e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 4,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.814697265625e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 5,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.814697265625e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 6,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 3.2186508178710938e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    },
+    {
+      "index": 7,
+      "layerBitExact": true,
+      "headsWithinTolerance": true,
+      "maxPolicyLogitDiff": 4.76837158203125e-06,
+      "modelHash": "b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d"
+    }
+  ],
+  "layerBitExact": true,
+  "headsWithinTolerance": true
+}
