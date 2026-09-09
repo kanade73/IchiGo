@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "runId": "p6-wide512-500k",
+  "data": "data/dataset-9",
+  "out": "runs/p6-wide512-500k",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 128,
+  "effectiveBatch": 128,
+  "maxSteps": 500000,
+  "validationInterval": 5000,
+  "checkpointInterval": 10000,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "d4",
+  "precision": "fp32",
+  "headVersion": 2,
+  "gateLearningRate": 0.1,
+  "dilations": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "channels": 512
+}

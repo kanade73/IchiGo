@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p6-wide512-half-data-200k",
+      "gpu": 0,
+      "config": "configs/experiments/phase2/p6-wide512-half-data-200k.json",
+      "out": "runs/p6-wide512-half-data-200k"
+    },
+    {
+      "runId": "p6-wide512-500k",
+      "gpu": 1,
+      "config": "configs/experiments/phase2/p6-wide512-500k.json",
+      "out": "runs/p6-wide512-500k"
+    },
+    {
+      "runId": "p6-wide512-gl30-bank30-200k",
+      "gpu": 2,
+      "config": "configs/experiments/phase2/p6-wide512-gl30-bank30-200k.json",
+      "out": "runs/p6-wide512-gl30-bank30-200k"
+    }
+  ]
+}

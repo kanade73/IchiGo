@@ -437,3 +437,8 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - `docs/runbook.md`（構築、モデル準備、fake server 演習、実 CGOS 設定、ログ/rotation、旧モデル復帰、M2b 記録項目、トラブル対応）、`docs/release-report-template.md`。
 - 既知事項: 対局中のエンジンクラッシュは client 自体が終了する（無人運用には再起動 supervisor が必要）。cgos の SIGTERM テストは高負荷時に 180 秒 timeout で不安定。
 - **M2a のゲート（T22〜T26、T28〜T30）は完了。M2b は公開 CGOS のアカウント・接続先設定待ち。**
+
+### 2026-09-10 01:30: phase 6 と追加データ
+
+- phase 6（GPU 0-2、wide512 局所 gateLR 0.1 基準）: 訓練データ半分（40,960 局面、データ量依存の切り分け）、500k step、gateLR 0.3 + bank30。
+- 追加ラベル生成: 棋譜 2,201〜7,200 局目（5,000 局）を Mac で特徴抽出し、サーバー GPU 3-4 で教師ラベル化中（約 25 万局面、同一教師・同一設定）。完了後に 3 倍規模の dataset を作り、データ量スケーリングを確認する。
