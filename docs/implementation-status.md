@@ -410,3 +410,8 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - 2 GPU の torchrun がコード外で停止: NCCL の P2P 経路がこのサーバー（GPU 間 PXB 接続）で hang する。2 rank の all_reduce 単体テストで `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1` のときだけ完了（0.2 秒）を確認。`Scripts/train_ddp.sh` に既定値として設定。
 - コード側は DDP wrap 前に全 rank のパラメータ署名を broadcast で照合する事前検査を追加（不一致は NCCL abort ではなく明示エラー）。gloo 2 process で Trainer 全経路（validation/checkpoint/throughputReference）を通すテストを追加、pytest 192 件。
 - 最初に見た「15 params vs 0 params」は NCCL 経路の停止に伴う検証 collective の不整合で、モデル構築の差ではない。
+
+### 2026-09-09 21:40: T26 検収（2 GPU）
+
+- 2 つ目の障害: heads-only 段階で gate エントロピー項が forward 外で theta を参照し、DDP reducer の「mark ready only once」違反を起こしていた。heads-only ではエントロピー項を計算しないよう修正（単一 process の数値は不変。gloo 2 process で stage 1→2→3 を跨ぐテストを追加、pytest 193 件）。
+- 2 GPU 検収（NCCL、P2P 無効、microBatch 32 × 2 rank × accumulation 2 = 128）: 100 step 完走、0.061 秒/step（1 GPU 0.109 秒/step → 1.79 倍、効率 0.89）、checkpoint → resume で 100 step まで完走。rank 失敗時の全 process 終了は最初の障害時に torchrun 経由で確認済み。4 GPU 検収を実行中。
