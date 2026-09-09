@@ -84,16 +84,21 @@ u_xy = concat(h_xy, m, v, global)         // 3C+4
 z_xy = ReLU(u_xy @ Wlocal + blocal)        // 64
 policy_xy = z_xy @ Wpolicy + bpolicy       // 1
 ownership_xy = tanh(z_xy @ Wowner + bowner)// 1
-zbar = mean_xy(z_xy)                        // 64  (headVersion 2)
-ownMean = mean_xy(ownership_xy)             // 1   (headVersion 2)
-u_global = concat(m,v,zbar,ownMean,global)  // 2C+69 (headVersion 2; headVersion 1 は concat(m,v,global) = 2C+4)
+zbar = mean_xy(z_xy)                        // 64  (headVersion 2, 3)
+zreg = concat_{i,j=0..2}(mean_{(x,y) in region(i,j)}(z_xy))  // 9*64=576 (headVersion 3)
+ownMean = mean_xy(ownership_xy)             // 1   (headVersion 2, 3)
+u_global = concat(m,v,zbar,ownMean,global)       // 2C+69  (headVersion 2)
+u_global = concat(m,v,zbar,zreg,ownMean,global)  // 2C+645 (headVersion 3)
+// headVersion 1: u_global = concat(m,v,global) = 2C+4
 z_global = ReLU(u_global @ Wglobal+bglobal)// 128
 passLogit = z_global @ Wpass+bpass         // 1
 wdlLogits = z_global @ Wwdl+bwdl           // 3: win,draw,loss
 scoreMean = z_global @ Wscore+bscore       // 1: 手番視点、目数
 ```
 
-各 W は `[in,out]` row-major float32、bias は `[out]`。local は `[3C+4,64]`、global は headVersion 2 で `[2C+69,128]`（headVersion 1 は `[2C+4,128]`）。headVersion 2 は 2026-09-08 の pilot で global head の入力 (m,v) に勝敗情報がほぼ無いことが判明したため追加した。局所 head の平均 `zbar` と ownership 平均 `ownMean` を global head へ渡す。loader は 1 と 2 の両方を受理し、manifest の `headVersion` で形状を決める。後続 W は順に `[64,1]`, `[64,1]`, `[128,1]`, `[128,3]`, `[128,1]`。Xavier uniform、bias=0で初期化する。
+`zreg` の region `(i,j)`（`i,j∈{0,1,2}`、順序は行優先 `i*3+j`）は盤を3×3に分割した領域内の `z_xy` の平均で、各領域64要素を連続配置する。分割は整数演算で行い、region `(i,j)` は行 `[floor(i*S/3), floor((i+1)*S/3))`・列 `[floor(j*S/3), floor((j+1)*S/3))` を覆う（9路: 3×3点の領域が3×3個、19路: 6/6/7点ずつの領域が3×3個）。行と列の分割は同じ境界式を独立に使い、領域面積は行数×列数。`S≥3` であれば全領域が非空になる。
+
+各 W は `[in,out]` row-major float32、bias は `[out]`。local は `[3C+4,64]`、global は headVersion 3 で `[2C+645,128]`、headVersion 2 で `[2C+69,128]`、headVersion 1 で `[2C+4,128]`。headVersion 2 は 2026-09-08 の pilot で global head の入力 (m,v) に勝敗情報がほぼ無いことが判明したため追加した。headVersion 3 は 2026-09-10 の診断（局所 hidden map `z_xy` の3×3領域平均を使う線形プローブが global mean/max pooling だけの場合より value を大きく上回って予測できた: MAE 0.274 対 0.306）を受けて、`zreg`（3×3領域ごとの `z_xy` 平均）を global head へ追加で渡す。loader は 1・2・3 のすべてを受理し、manifest の `headVersion` で形状を決める。後続 W は順に `[64,1]`, `[64,1]`, `[128,1]`, `[128,3]`, `[128,1]`。Xavier uniform、bias=0で初期化する。
 policy は全点の logit の後に passLogit を連結。softmax 前に非合法手を除外。ownership は手番の領有 +1、相手 -1、中立0。score はコミ込み。目差の分散・KataGo固有補助ヘッドは v1 で予測しない。
 浮動小数点ヘッドは性能測定の独立項目。ヘッドが支配的なら local projection を共有成分と点固有成分に分解して同じ関数を高速化する。無断で巨大 CNN に置き換えない。
 
