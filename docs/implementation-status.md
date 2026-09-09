@@ -415,3 +415,9 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 
 - 2 つ目の障害: heads-only 段階で gate エントロピー項が forward 外で theta を参照し、DDP reducer の「mark ready only once」違反を起こしていた。heads-only ではエントロピー項を計算しないよう修正（単一 process の数値は不変。gloo 2 process で stage 1→2→3 を跨ぐテストを追加、pytest 193 件）。
 - 2 GPU 検収（NCCL、P2P 無効、microBatch 32 × 2 rank × accumulation 2 = 128）: 100 step 完走、0.061 秒/step（1 GPU 0.109 秒/step → 1.79 倍、効率 0.89）、checkpoint → resume で 100 step まで完走。rank 失敗時の全 process 終了は最初の障害時に torchrun 経由で確認済み。4 GPU 検収を実行中。
+
+### 2026-09-09 22:00: T26 検収（4 GPU）
+
+- 4 GPU（NCCL、P2P 無効、microBatch 32 × 4 rank × accumulation 1 = 128）: 100 step 完走、0.035 秒/step、3,680 samples/秒。1 GPU 比 3.1 倍、scaling efficiency 0.78（1 GPU 0.109 秒/step、2 GPU 0.061 秒/step から算出。run-summary の throughputRatio は参照パスの解決不備で None のため手計算）。peak GPU memory rank0 620 MiB、他 239 MiB。
+- 同一 global batch の勾配一致は gloo 2 process の CPU テスト（SGD 代替、1e-5 以内）で確認。GPU 上の bit 一致は別指標（05 §3）で未実施。
+- M2a の 4GPU 学習検収は満たした。今後の実験は small モデルでは 1 GPU × 多構成が効率的（efficiency 0.78）で、DDP は base 以上の長時間ランに使う。
