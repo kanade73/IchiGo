@@ -59,14 +59,14 @@ usage: ichigo <command> [options]
 commands:
   doctor                         CPU/OS/Metal capability report as JSON (no serial numbers)
   inspect --model PATH           validate a .ichigo directory, print manifest, shapes and hashes
-  eval --model PATH --position FILE [--backend cpu|metal|auto] [--dump-layers FILE]
+  eval --model PATH --position FILE [--backend cpu|cpu-packed|metal|metal-packed|auto] [--dump-layers FILE]
                                  evaluate one position JSON (spatial/global/legal arrays) and print
                                  raw outputs and the post-processed evaluation as JSON; --dump-layers
                                  writes every logic layer's bits ([L,S,S,C] uint8) for parity checks
-  gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|metal|auto] [--visits N]
+  gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|cpu-packed|metal|metal-packed|auto] [--visits N]
                                  GTP engine on stdin/stdout (logs on stderr); at least one model
   selfplay --model PATH --games N --out DIR --seed N [--visits N] [--size 9|19]
-           [--backend cpu|metal|auto]
+           [--backend cpu|cpu-packed|metal|metal-packed|auto]
                                  self-play with the model on both sides; writes SGF + root visit
                                  targets (JSONL) per game
   features --sgf-dir DIR --out FILE --size 9|19 [--rules cgos-area-psk-v1] [--komi K]
@@ -74,7 +74,7 @@ commands:
                                  replay SGF main lines and stream one JSONL row per position;
                                  rejected games go to <out>.rejects.jsonl with file name and move
   benchmark --model PATH --positions FILE --batches 1,8,32 --out FILE.json
-            [--backends cpu,metal] [--warmup 50] [--iters 200]
+            [--backends cpu,cpu-packed,metal,metal-packed] [--warmup 50] [--iters 200]
                                  docs/spec/05-validation.md §7 Mac benchmark: warmup then measure
                                  each batch/backend combination on the first rows of the JSONL
                                  `ichigo features` produces (repeating rows if there are fewer than
@@ -82,11 +82,15 @@ commands:
                                  batch/backend, exactly the §7 columns) and FILE.backend-profile.json
                                  (fastest measured backend per batch; docs/spec/04-tasks.md T25)
 
---backend auto picks metal if a Metal device is available, else cpu. --backend metal with no
-device is a usage error (exit 2), never a silent fallback.
+backends: cpu (byte gates + explicit-loop CPU heads, the golden oracle), cpu-packed (batch-packed
+CPU gates + accelerated CPU heads), metal (byte gates on GPU + accelerated CPU heads),
+metal-packed (batch-packed gates + heads, both on GPU). --backend auto picks metal if a Metal
+device is available, else cpu. --backend metal/metal-packed with no device is a usage error
+(exit 2), never a silent fallback.
 """
 
-/// cpu -> ScalarBackend, metal -> MetalBackend (usage error, exit 2, if no Metal device), auto ->
+/// cpu -> ScalarBackend, cpu-packed -> PackedCPUBackend, metal -> MetalBackend, metal-packed ->
+/// MetalPackedBackend (both Metal backends: usage error, exit 2, if no Metal device), auto ->
 /// metal if available else cpu (docs/spec/01-network.md §5: "Metal device がなければ...auto は
 /// CPU"). The backend is picked once per process/session; there is no per-request runtime
 /// fallback within one `gtp`/`selfplay` run.
@@ -94,15 +98,19 @@ func makeBackend(_ name: String, model: LogicModelData) -> any LogicBackend {
     switch name {
     case "cpu":
         return ScalarBackend(model: model)
+    case "cpu-packed":
+        return PackedCPUBackend(model: model)
     case "metal":
         do { return try MetalBackend(model: model) } catch { fail("metal backend unavailable: \(error)", .usage) }
+    case "metal-packed":
+        do { return try MetalPackedBackend(model: model) } catch { fail("metal-packed backend unavailable: \(error)", .usage) }
     case "auto":
         if MetalAvailability.probe().available {
             do { return try MetalBackend(model: model) } catch { fail("metal backend unavailable: \(error)", .usage) }
         }
         return ScalarBackend(model: model)
     default:
-        fail("unknown --backend \(name) (expected cpu, metal, or auto)", .usage)
+        fail("unknown --backend \(name) (expected cpu, cpu-packed, metal, metal-packed, or auto)", .usage)
     }
 }
 
@@ -235,7 +243,9 @@ func parsePositionFields(_ obj: [String: Any], context: String) -> (size: Int, s
 /// concrete type.
 func dumpLayers(_ backend: any LogicBackend, features: FeatureBatch) async throws -> [[UInt8]] {
     if let scalar = backend as? ScalarBackend { return scalar.layerOutputs(features: features) }
+    if let packed = backend as? PackedCPUBackend { return packed.layerOutputs(features: features) }
     if let metal = backend as? MetalBackend { return try await metal.layerOutputs(features: features) }
+    if let metalPacked = backend as? MetalPackedBackend { return try await metalPacked.layerOutputs(features: features) }
     throw LogicModelError.backendUnavailable("--dump-layers is not supported for backend \(backend.name)")
 }
 
@@ -287,7 +297,9 @@ func cmdEval(_ args: Args) async {
 
 func makeSlots(_ args: Args) -> [Int: GTPEngine.ModelSlot] {
     let backendName = args.options["backend"] ?? "auto"
-    guard ["cpu", "metal", "auto"].contains(backendName) else { fail("--backend \(backendName) must be cpu, metal, or auto", .usage) }
+    guard ["cpu", "cpu-packed", "metal", "metal-packed", "auto"].contains(backendName) else {
+        fail("--backend \(backendName) must be cpu, cpu-packed, metal, metal-packed, or auto", .usage)
+    }
     var slots: [Int: GTPEngine.ModelSlot] = [:]
     for (size, key) in [(9, "model-9"), (19, "model-19")] {
         guard let path = args.options[key] else { continue }
@@ -437,24 +449,51 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
     return sorted[min(rank, sorted.count) - 1]
 }
 
-/// Runs the logic layers (gate_ms), the existing CPU `Heads.evaluate` (head_ms; Metal heads are
-/// T24, out of scope here so both backends run the identical CPU head code) and `Postprocess`
-/// (post_ms) as three separately-timed stages, bypassing `LogicBackend.evaluate`'s single-shot
-/// timing so the benchmark can report each stage.
+/// Runs the gate layers (gate_ms), the heads (head_ms) and `Postprocess` (post_ms) as three
+/// separately-timed stages, bypassing `LogicBackend.evaluate`'s single-shot timing so the
+/// benchmark can report each stage. `cpu` keeps the explicit-loop `Heads.evaluate` (the golden
+/// oracle, docs/spec/01-network.md §5: "最適化前の golden oracle として永久に保持"); `cpu-packed`
+/// and `metal` (byte gates + CPU heads) use the accelerated CPU head path
+/// (`Heads.evaluateAccelerated`, docs/spec/04-tasks.md T24); `metal-packed` runs heads on the GPU
+/// via `MetalPackedBackend.evaluateTimed`, which encodes gates+heads as two separate command
+/// buffers purely so this benchmark can split their timing (the real `evaluate()` path fuses them
+/// into one command buffer, per T24).
 func runOneIteration(backend: any LogicBackend, model: LogicModelData, features: FeatureBatch) async throws -> (gateMs: Double, headMs: Double, postMs: Double) {
     let clock = ContinuousClock()
+
+    if let metalPacked = backend as? MetalPackedBackend {
+        let (raw, gateMs, headMs) = try await metalPacked.evaluateTimed(features: features)
+        let t0 = clock.now
+        if features.batch > 0 { _ = try Postprocess.evaluate(raw: raw, features: features) }
+        let postMs = (clock.now - t0).milliseconds
+        return (gateMs, headMs, postMs)
+    }
+
     var t0 = clock.now
-    let layers: [[UInt8]]
+    let lastLayerBits: [UInt8]
+    let useAcceleratedHeads: Bool
     if let scalar = backend as? ScalarBackend {
-        layers = scalar.layerOutputs(features: features)
+        let layers = scalar.layerOutputs(features: features)
+        lastLayerBits = layers[model.layers - 1]
+        useAcceleratedHeads = false
+    } else if let packed = backend as? PackedCPUBackend {
+        // Mirrors `PackedCPUBackend.evaluateSync`: only the last layer needs unpacking (unlike
+        // `layerOutputs`, which unpacks every layer for parity tests).
+        let packedLayers = packed.packedLayerOutputs(features: features)
+        lastLayerBits = PackBits.unpack(packedLayers[model.layers - 1], boardSize: features.boardSize, batch: features.batch, channels: model.channels)
+        useAcceleratedHeads = true
     } else if let metal = backend as? MetalBackend {
-        layers = try await metal.layerOutputs(features: features)
+        let layers = try await metal.layerOutputs(features: features)
+        lastLayerBits = layers[model.layers - 1]
+        useAcceleratedHeads = true
     } else {
         throw LogicModelError.backendUnavailable("benchmark: unsupported backend \(backend.name)")
     }
     let gateMs = (clock.now - t0).milliseconds
     t0 = clock.now
-    let raw = try Heads.evaluate(model: model, lastLayer: layers[model.layers - 1], features: features)
+    let raw = useAcceleratedHeads
+        ? try Heads.evaluateAccelerated(model: model, lastLayer: lastLayerBits, features: features)
+        : try Heads.evaluate(model: model, lastLayer: lastLayerBits, features: features)
     let headMs = (clock.now - t0).milliseconds
     t0 = clock.now
     if features.batch > 0 { _ = try Postprocess.evaluate(raw: raw, features: features) }
@@ -472,15 +511,16 @@ func cmdBenchmark(_ args: Args) async {
     guard !batches.isEmpty, batches.count == batchTokens.count, batches.allSatisfy({ $0 >= 0 }) else {
         fail("--batches must be a comma-separated list of non-negative integers, got \(batchesStr)", .usage)
     }
+    let knownBackends = ["cpu", "cpu-packed", "metal", "metal-packed"]
     let requestedBackends: [String]
     if let s = args.options["backends"] {
         let tokens = s.split(separator: ",", omittingEmptySubsequences: true).map(String.init)
-        guard !tokens.isEmpty, tokens.allSatisfy({ ["cpu", "metal"].contains($0) }) else {
-            fail("--backends entries must be cpu or metal, got \(s)", .usage)
+        guard !tokens.isEmpty, tokens.allSatisfy({ knownBackends.contains($0) }) else {
+            fail("--backends entries must be one of \(knownBackends.joined(separator: ",")), got \(s)", .usage)
         }
         requestedBackends = tokens
     } else {
-        requestedBackends = MetalAvailability.probe().available ? ["cpu", "metal"] : ["cpu"]
+        requestedBackends = MetalAvailability.probe().available ? knownBackends : ["cpu", "cpu-packed"]
     }
     let warmup = args.options["warmup"].flatMap(Int.init) ?? 50
     let iters = args.options["iters"].flatMap(Int.init) ?? 200
@@ -517,8 +557,12 @@ func cmdBenchmark(_ args: Args) async {
         switch name {
         case "cpu":
             backend = ScalarBackend(model: model)
+        case "cpu-packed":
+            backend = PackedCPUBackend(model: model)
         case "metal":
             do { backend = try MetalBackend(model: model) } catch { fail("metal backend unavailable: \(error)", .usage) }
+        case "metal-packed":
+            do { backend = try MetalPackedBackend(model: model) } catch { fail("metal-packed backend unavailable: \(error)", .usage) }
         default:
             fail("unreachable --backends entry \(name)", .usage)
         }
@@ -553,7 +597,7 @@ func cmdBenchmark(_ args: Args) async {
                 let samples = b * iters
                 let totalElapsedMs = totalTimes.reduce(0, +)
                 let positionsPerSec = totalElapsedMs > 0 ? Double(samples) / (totalElapsedMs / 1000) : 0
-                let metalAllocated: UInt64 = (backend as? MetalBackend)?.currentAllocatedBytes ?? 0
+                let metalAllocated: UInt64 = (backend as? MetalBackend)?.currentAllocatedBytes ?? (backend as? MetalPackedBackend)?.currentAllocatedBytes ?? 0
                 let row: [String: Any] = [
                     "model_hash": model.payloadHash, "size": targetSize, "batch": b, "backend": backendName, "samples": samples,
                     "feature_ms": 0.0, "pack_ms": 0.0,

@@ -32,8 +32,8 @@ fixtures: ## Regenerate shared fixtures only
 check-metal: ## Metal kernel/loader/lifecycle tests (Mac Metal; skips cleanly with no device)
 	$(SWIFT) test --filter 'LogicMetalTests'
 
-parity-metal: ## CPU scalar vs Metal-byte parity, both board sizes (regenerates nothing)
-	$(SWIFT) test --filter 'LogicMetalTests.MetalParityTests'
+parity-metal: ## CPU scalar vs Metal-byte vs Metal-packed parity, both board sizes (regenerates nothing)
+	$(SWIFT) test --filter 'LogicMetalTests.MetalParityTests|LogicMetalTests.MetalPackedBackendTests'
 
 check-cuda: ## CUDA forward/backward and DDP tests (T17/T26, university GPUs)
 	@echo "check-cuda: not implemented until T17/T26"; exit 1

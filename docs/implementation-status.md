@@ -334,3 +334,56 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - T29 校正: `sgf-results`（RE 解析、2,199 局: 投了 1,575 / 点数 624）、`calibrate`（温度 fit、Brier/ECE、game bootstrap、100 局未満は insufficientSamples）、`export --calibration`、Swift 後処理の温度適用。小 pilot では T≈0.82、test 12 局のため未検証扱い。
 - 探索: 配置を 8 層に限定、fingerprint の逐次更新、edge index 保持で 267→328 visits/秒（実モデル）。fake evaluator では 9 路 4,509 / 19 路 1,444 visits/秒で、木の overhead は小さく NN が律速。
 - 回帰: Swift 147 + Metal 14、pytest 189、commit 211cbd1。
+
+### 2026-09-09: T23/T24 Metal-packed・CPU-packed・Metal heads
+
+対象: `docs/spec/01-network.md` §4-5、`docs/spec/04-tasks.md` T23/T24。依存 T22 完了済み。
+
+#### 成果物
+
+| ファイル | 内容 |
+|---|---|
+| `Sources/LogicModel/PackBits.swift`（新規） | batch方向32bit pack/unpack（`[B,S,S,C]`→`[G,S,S,C]` uint32、`G=ceil(B/32)`）、`validMask`（最後のgroupのみ、シフト32禁止） |
+| `Sources/LogicModel/PackedCPUBackend.swift`（新規） | `cpu-packed`。§5の四項式をuint32語に適用、全layer出力へ末尾maskを適用（true/NOT含む）、bank参照はScalarBackendと同一。`layerOutputs`（unpack済み、parity用）と`packedLayerOutputs`（packed、benchmark用）を公開 |
+| `Sources/LogicModel/HeadsAccelerated.swift`（新規） | `Heads.evaluateAccelerated`。`#if canImport(Accelerate)` で `cblas_sgemm` により local/global projectionをsegment別（h/m/v/global）のbatched matmulへ再構成（`Heads.evaluate`の明示ループはScalarBackend専用の golden oracle として不変更）。Accelerateがない場合は`Heads.evaluate`にフォールバック |
+| `Sources/LogicMetal/Resources/logic_packed.metal`（新規） | `logic_layer_packed` カーネル。`logic_byte.metal`と同じ構造をuint32語（32レーン/word）に拡張、末尾maskを全gateに適用 |
+| `Sources/LogicMetal/Resources/heads.metal`（新規） | `heads_reduce`（packed bitからm/v直接計算）、`heads_local`（点ごとのlocal projection、u_xyを材料化せずh/m/v/globalをsegment別に64次元accumulatorへ直接累積、policy/ownership/zBuf出力）、`heads_global`（headVersion 2のzbar/ownMean reductionを同カーネル内で実施、global projection→pass/wdl/score）。`LOCAL_HIDDEN=64`/`GLOBAL_HIDDEN=128`はManifest定数なのでcompile-time固定、可変長thread-local配列を回避 |
+| `Sources/LogicMetal/MetalPackedBackend.swift`（新規） | `metal-packed`。gate層Lディスパッチ+heads 3ディスパッチを同一command bufferへencodeし1回commit/wait（`evaluate`）。fast-math off（`MTLCompileOptions.fastMathEnabled=false`）。`layerOutputs`はgateのみ別command buffer。ベンチマーク専用に`evaluateTimed`（gate/head別command bufferでtiming分離、実運用の`evaluate`とは別経路） |
+| `Sources/LogicMetal/MetalBackend.swift` | `evaluate`が`Heads.evaluate`から`Heads.evaluateAccelerated`へ変更（byte gates + 高速化CPU head）。ScalarBackendのみ従来のまま |
+| `Sources/ichigo/main.swift` | `--backend cpu\|cpu-packed\|metal\|metal-packed\|auto`、`benchmark --backends`に4種、`metal_allocated_bytes`をMetalPackedBackendでも収集 |
+| `Makefile` | `parity-metal`が`MetalParityTests`と`MetalPackedBackendTests`の両方を実行 |
+
+#### テスト（新規）
+
+- `Tests/LogicModelTests/PackBitsTests.swift`（6件）: B=0,1,2,31,32,33,63,64,65のgroup数/validMask/pack-unpack round trip、全0/全1入力、padding未設定の確認。
+- `Tests/LogicModelTests/PackedCPUBackendTests.swift`（6件）: tiny-9/19/headv1でB=0,1,2,31,32,33,63,64,65の全layer bit一致（ScalarBackend比較）、`@testable import`で構築したtrue(15)/NOT-a(3)ゲート専用モデルでpadding laneが末尾maskで0になることを直接検証。
+- `Tests/LogicModelTests/HeadsAcceleratedTests.swift`（4件）: `Heads.evaluateAccelerated`が複数batchサイズで`Heads.evaluate`の§3許容誤差内、post-process後のpolicyも同様。
+- `Tests/LogicMetalTests/MetalPackedBackendTests.swift`（10件）: gate層parity（cpu-packed/metal-packedともScalarBackendと全layer bit一致、B=0〜65）、heads許容誤差（固定fixture＋ScalarBackend比較）、決定性、空batch、対応外board size拒否、そして`models/p2-small-gl10.ichigo`＋`data/positions-9.jsonl`先頭32局面でCPU scalarとmetal-packedのtop手が一致（near-tie以外）かつpolicy全要素が1e-5以内。
+
+#### 検証結果（このMac、2026-09-09）
+
+- `swift test --filter 'LogicModelTests|LogicMetalTests'`: 66 tests、1 skipped（no-Metal-deviceパスの意図的skip）、0 failures。
+- `make parity-metal`（`MetalParityTests`+`MetalPackedBackendTests`）: 13 tests、0 failures。
+- `swift test --filter 'IchiGoCoreTests|IchiGoFeaturesTests|LogicModelTests|IchiGoEngineTests|IchiGoGTPTests'`（check-cpuのSwift部分）: 163 tests、1 skipped、0 failures（既存機能への影響なし）。
+
+#### ベンチマーク（release、`models/p2-small-gl10.ichigo`、small・C=256・L=8・headVersion2・9路、`data/positions-9.jsonl`、warmup50/iters200）
+
+`reports/benchmark/p2-small-gl10-m5-v2.json`（旧: `p2-small-gl10-m5.json`、byte gates + CPU headのみ）。gate_ms/head_ms/total_p50/p95/positions_per_secをbackend×batchで採取:
+
+| backend | B=1 total p50/p95 (ms) | B=32 total p50/p95 (ms) | B=32 positions/sec | B=64 positions/sec |
+|---|---:|---:|---:|---:|
+| cpu（golden、explicit-loop head） | 2.94 / 3.00 | 93.8 / 94.2 | 341 | 342 |
+| cpu-packed（packed gate + accelerated head） | 0.66 / 0.68 | 2.07 / 2.14 | 15,386 | 15,647 |
+| metal（byte gate on GPU + accelerated head） | 0.32 / 0.48 | 2.39 / 3.82 | 11,760 | 11,896 |
+| metal-packed（packed gate + Metal head、両方GPU） | 2.35 / 2.48 | 2.74 / 2.86 | 11,599 | 20,536 |
+
+§7目標: B=1 total p95≤20msは4backendすべて達成（最大でもcpuの3.0ms）。B=32≥1000 positions/secはcpu以外の3backendが達成（cpu-packedが最速、15.4k/秒）。cpu単独は未達のまま（headがexplicit loopのため）だが、auto/backend-profile選択で目標達成backendを選べる。旧報告（byte gates + CPU head、gate_ms 2.89ms/head_ms 79msでhead支配）から、cpu-packedのhead_msは1.20ms（32C×64C×3batched matmul）、metal-packedのhead_msは2.41ms（GPU heads、B=1では固定overheadのため相対的に遅い＝仕様の想定通り「B=1では32bitの31bitが遊ぶため高速化は保証しない」）。metal-packedはB=64で最速（20,536 positions/sec）。
+
+`reports/benchmark/p2-small-gl10-m5-v2.backend-profile.json`: B=1→metal、B=8→metal、B=32→cpu-packed、B=64→metal-packedを最速として記録（T25のBackendSelector形式のまま、4backend対応）。
+
+#### 設計上の判断（仕様が明示していない点）
+
+- `Heads.evaluate`（明示ループ）はScalarBackendのみが呼ぶ恒久oracleとして凍結し、他backend（metal/cpu-packed）は`Heads.evaluateAccelerated`（Accelerate cblas_sgemm、なければloopにfallback）を使う。両者の数値は§3許容誤差内であることを`HeadsAcceleratedTests`で保証。
+- `heads.metal`は`u_xy`/`u_global`をbufferへ材料化せず、入力segment（h/m/v/global、または m/v/zbar/ownMean/global）ごとに64/128次元accumulatorへ直接累積する設計とし、`LOCAL_HIDDEN`/`GLOBAL_HIDDEN`をcompile-time定数にすることで可変長thread-local配列を回避した。
+- `MetalPackedBackend.evaluate`はgate+headsを1 command bufferへfuseする（T24契約）。ベンチマークのgate_ms/head_ms分離のためだけに`evaluateTimed`が2 command bufferへ分ける別経路を持つ（実運用の`evaluate`とは独立）。
+- 入力のbatch方向packingはCPU側（`PackBits.pack`、S*S*C回のbit set操作のみで軽量）で行い、GPUへは packed bufferとしてアップロードする。pack自体のtimingは`pack_ms`列へ分離せず`gate_ms`へ含めた（コストが無視できるほど小さいため、T22時点から変更していない`feature_ms`/`pack_ms`=0固定の扱いを踏襲）。

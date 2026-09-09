@@ -65,7 +65,11 @@ public final class MetalBackend: LogicBackend, @unchecked Sendable {
             return RawBatch(boardSize: features.boardSize, batch: 0, policyLogits: [], wdlLogits: [], scoreMean: [], ownership: [])
         }
         let layers = try await layerOutputs(features: features)
-        return try Heads.evaluate(model: model, lastLayer: layers[model.layers - 1], features: features)
+        // `Heads.evaluate` (the explicit-loop golden oracle) stays reserved for `ScalarBackend`;
+        // every other backend, this one included, uses the faster reassociated-sum path
+        // (docs/spec/04-tasks.md T24: "CPU Heads.evaluateを...高速化"), which
+        // `HeadsAcceleratedTests` checks stays within docs/spec/05-validation.md §3 tolerance.
+        return try Heads.evaluateAccelerated(model: model, lastLayer: layers[model.layers - 1], features: features)
     }
 
     /// Output bits of every logic layer, each `[B,S,S,C]` in `(((b*S+y)*S+x)*C+c)` order.
@@ -151,7 +155,9 @@ public final class MetalBackend: LogicBackend, @unchecked Sendable {
         return result
     }
 
-    private static func commitAndWait(_ commandBuffer: MTLCommandBuffer) async throws {
+    /// Not `private`: `MetalPackedBackend` (same module) reuses this exact commit/await/error
+    /// shape for its own command buffers.
+    static func commitAndWait(_ commandBuffer: MTLCommandBuffer) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             commandBuffer.addCompletedHandler { buf in
                 if let error = buf.error {
