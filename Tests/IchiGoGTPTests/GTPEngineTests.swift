@@ -154,9 +154,38 @@ final class GTPEngineTests: XCTestCase {
         XCTAssertEqual(try ValueSourceFlags.parse(source: "ownership", blend: nil, k: nil, b: nil), .ownership(k: 6, b: 1))  // defaults
         XCTAssertEqual(try ValueSourceFlags.parse(source: "blend", blend: "0.3", k: nil, b: nil), .blend(weightNetwork: 0.3, k: 6, b: 1))
         XCTAssertEqual(try ValueSourceFlags.parse(source: "blend", blend: nil, k: nil, b: nil), .blend(weightNetwork: 0.5, k: 6, b: 1))  // default weight
+        XCTAssertEqual(try ValueSourceFlags.parse(source: "rollout", blend: nil, k: nil, b: nil), .rollout(count: 8, maxMoves: 2 * 9 * 9, weightNetwork: 0.5))  // defaults, boardSize defaults to 9
+        XCTAssertEqual(
+            try ValueSourceFlags.parse(source: "rollout", blend: "0.7", k: nil, b: nil, rolloutCount: "4", rolloutMaxMoves: "50", boardSize: 19),
+            .rollout(count: 4, maxMoves: 50, weightNetwork: 0.7)
+        )
+        XCTAssertEqual(
+            try ValueSourceFlags.parse(source: "rollout", blend: nil, k: nil, b: nil, boardSize: 19), .rollout(count: 8, maxMoves: 2 * 19 * 19, weightNetwork: 0.5)
+        )  // --rollout-max-moves default depends on boardSize
         XCTAssertThrowsError(try ValueSourceFlags.parse(source: "bogus", blend: nil, k: nil, b: nil)) { error in
             XCTAssertEqual(error as? ValueSourceFlagError, .unknownSource("bogus"))
         }
+    }
+
+    /// docs/implementation-status.md 2026-09-10 §4-5: rollout diagnostics (average playouts per
+    /// leaf, fraction hitting `--rollout-max-moves`) are logged once per genmove alongside the
+    /// existing `rawNN=`/`valueSource=` line, only when `valueSource` is `.rollout`.
+    func testRolloutDiagnosticsAreLoggedPerGenmove() async throws {
+        var cfg = GTPEngine.Config(); cfg.visits = 8
+        cfg.searchSettings.valueSource = try ValueSourceFlags.parse(source: "rollout", blend: nil, k: nil, b: nil, rolloutCount: "3", rolloutMaxMoves: "40")
+        let slot = GTPEngine.ModelSlot(evaluator: UniformEvaluator(sizes: [9]), modelHash: "fake-9")
+        let logs = LogCapture()
+        let e = try GTPEngine(models: [9: slot], config: cfg, log: { logs.append($0) })
+        XCTAssertTrue(logs.snapshot().contains { $0.contains("value-source=rollout(count=3,maxMoves=40,w=0.5)") })
+
+        let r = await e.handle(line: "genmove b")
+        XCTAssertTrue(r.hasPrefix("= "), r)
+        XCTAssertTrue(logs.snapshot().contains { $0.contains("valueSource=rollout(count=3,maxMoves=40,w=0.5)") })
+        let rolloutLine = logs.snapshot().first { $0.hasPrefix("genmove rollout:") }
+        XCTAssertNotNil(rolloutLine)
+        XCTAssertTrue(rolloutLine!.contains("leaves="))
+        XCTAssertTrue(rolloutLine!.contains("avgPlayoutsPerLeaf="))
+        XCTAssertTrue(rolloutLine!.contains("maxMovesHitFraction="))
     }
 
     /// The CLI-parsed value source must be echoed to the GTP log, both once at startup and on

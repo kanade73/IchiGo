@@ -222,6 +222,14 @@ public actor GTPEngine {
         } else {
             log("genmove \(Coordinates.gtpString(outcome.move, size: boardSize)) fallback (deadline watchdog fired) model=\(slot.modelHash.prefix(12))")
         }
+        if case .rollout = config.searchSettings.valueSource.mode {
+            // docs/implementation-status.md 2026-09-10 §4-5: "log per-genmove the average
+            // playouts per leaf and the fraction of playouts that hit maxMoves". Read regardless
+            // of `outcome.timedOut` — a fallback move still ran whatever rollouts completed before
+            // the watchdog fired.
+            let rollout = await s.rolloutDiagnostics()
+            log("genmove rollout: leaves=\(rollout.leaves) avgPlayoutsPerLeaf=\(String(format: "%.2f", rollout.averagePlayoutsPerLeaf)) maxMovesHitFraction=\(String(format: "%.3f", rollout.maxMovesHitFraction)) (\(rollout.maxMovesHit)/\(rollout.playouts))")
+        }
         return (outcome.move, outcome.result)
     }
 

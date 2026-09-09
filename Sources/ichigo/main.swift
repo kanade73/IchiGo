@@ -64,11 +64,13 @@ commands:
                                  raw outputs and the post-processed evaluation as JSON; --dump-layers
                                  writes every logic layer's bits ([L,S,S,C] uint8) for parity checks
   gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|cpu-packed|metal|metal-packed|auto] [--visits N]
-      [--value-source network|ownership|blend] [--value-blend W] [--value-k K] [--value-b B]
+      [--value-source network|ownership|blend|rollout] [--value-blend W] [--value-k K] [--value-b B]
+      [--rollout-count N] [--rollout-max-moves M]
                                  GTP engine on stdin/stdout (logs on stderr); at least one model
   selfplay --model PATH --games N --out DIR --seed N [--visits N] [--size 9|19]
            [--backend cpu|cpu-packed|metal|metal-packed|auto]
-           [--value-source network|ownership|blend] [--value-blend W] [--value-k K] [--value-b B]
+           [--value-source network|ownership|blend|rollout] [--value-blend W] [--value-k K] [--value-b B]
+           [--rollout-count N] [--rollout-max-moves M]
                                  self-play with the model on both sides; writes SGF + root visit
                                  targets (JSONL) per game
   features --sgf-dir DIR --out FILE --size 9|19 [--rules cgos-area-psk-v1] [--komi K]
@@ -93,8 +95,15 @@ device is available, else cpu. --backend metal/metal-packed with no device is a 
 value-source (docs/spec/03-engine.md §3-4): --value-source network (default) keeps the logic
 network's own wdl head. ownership derives the search's leaf value from the ownership head instead
 (value_own = sigmoid((score_est + b) / k), score_est = sum of ownership + signed komi); blend uses
-weightNetwork*e_nn + (1-weightNetwork)*value_own. --value-blend sets weightNetwork (default 0.5),
---value-k/--value-b set k/b (defaults 6, 1.0). The raw network WDL is always kept and logged
+weightNetwork*e_nn + (1-weightNetwork)*value_own. rollout runs --rollout-count (default 8)
+policy-guided playouts per leaf (temperature 1 over the network's own legal-move policy, batched in
+lock-step so each playout step is one evaluator call), scoring value_rollout = mean over playouts
+of win=1/draw=0.5/loss=0 (white perspective) and blending weightNetwork*e_nn +
+(1-weightNetwork)*value_rollout; --rollout-max-moves caps each playout (default 2*boardSize^2, e.g.
+162 on 9x9), beyond which the position is scored as-is (an approximation) instead of via a natural
+two-pass end — genmove logs the average playouts per leaf and the fraction that hit this cap.
+--value-blend sets weightNetwork (default 0.5, used by both blend and rollout), --value-k/--value-b
+set k/b for ownership/blend (defaults 6, 1.0). The raw network WDL is always kept and logged
 alongside the search value regardless of this setting.
 """
 
@@ -304,12 +313,17 @@ func cmdEval(_ args: Args) async {
     }
 }
 
-/// Shared by `gtp` and `selfplay`: `--value-source`/`--value-blend`/`--value-k`/`--value-b`
-/// (docs/spec/03-engine.md §3-4 "値ソース"). Parsing itself lives in `ValueSourceFlags`
-/// (`IchiGoGTP`, unit-tested there) so this is just the usage-error plumbing.
-func parseValueSource(_ args: Args) -> ValueSource {
+/// Shared by `gtp` and `selfplay`: `--value-source`/`--value-blend`/`--value-k`/`--value-b`/
+/// `--rollout-count`/`--rollout-max-moves` (docs/spec/03-engine.md §3-4 "値ソース"). Parsing
+/// itself lives in `ValueSourceFlags` (`IchiGoGTP`, unit-tested there) so this is just the
+/// usage-error plumbing. `boardSize` only matters for `rollout`'s `--rollout-max-moves` default
+/// (`2*boardSize^2`).
+func parseValueSource(_ args: Args, boardSize: Int) -> ValueSource {
     do {
-        return try ValueSourceFlags.parse(source: args.options["value-source"], blend: args.options["value-blend"], k: args.options["value-k"], b: args.options["value-b"])
+        return try ValueSourceFlags.parse(
+            source: args.options["value-source"], blend: args.options["value-blend"], k: args.options["value-k"], b: args.options["value-b"],
+            rolloutCount: args.options["rollout-count"], rolloutMaxMoves: args.options["rollout-max-moves"], boardSize: boardSize
+        )
     } catch {
         fail("\(error)", .usage)
     }
@@ -344,7 +358,7 @@ func cmdGTP(_ args: Args) async {
     var cfg = GTPEngine.Config()
     cfg.visits = args.options["visits"].flatMap(Int.init) ?? 100
     cfg.defaultBoardSize = slots[9] != nil ? 9 : 19
-    cfg.searchSettings.valueSource = parseValueSource(args)
+    cfg.searchSettings.valueSource = parseValueSource(args, boardSize: cfg.defaultBoardSize)
     let engine: GTPEngine
     do {
         engine = try GTPEngine(models: slots, config: cfg, log: { msg in FileHandle.standardError.write(("[ichigo] " + msg + "\n").data(using: .utf8)!) })
@@ -363,7 +377,7 @@ func cmdSelfplay(_ args: Args) async {
     try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
     let komi = size == 9 ? IchiGoRules.defaultKomi9 : IchiGoRules.defaultKomi19
     var settings = SearchSettings()
-    settings.valueSource = parseValueSource(args)
+    settings.valueSource = parseValueSource(args, boardSize: size)
     do {
             for g in 0 ..< games {
                 let record = try await SelfPlay.playGame(slot: slot, size: size, komi: komi, visits: visits, seed: seed &+ UInt64(g), maxMoves: 4 * size * size, settings: settings)

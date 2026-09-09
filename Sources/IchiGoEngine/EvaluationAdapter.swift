@@ -50,6 +50,19 @@ public struct ValueSource: Sendable, Equatable {
         /// `value = weightNetwork * e_nn + (1 - weightNetwork) * value_own`, both terms in the
         /// to-move perspective before the white-perspective conversion.
         case blend(weightNetwork: Float, k: Float, b: Float)
+        /// Classic policy-guided playouts (docs/implementation-status.md 2026-09-10 §4-5:
+        /// "playouts as an alternative/supplement to the network value"). At leaf expansion, after
+        /// the network evaluation, `count` playouts are run from the leaf: each copies the leaf's
+        /// `GameState` and repeatedly samples a move from the network's own policy (temperature 1
+        /// over legal moves) until two passes or `maxMoves` plies, scored exactly by
+        /// `GameState.exactWhiteOutcome` (or, if `maxMoves` is hit first, by
+        /// `history.endAndScoreGameNow` on the as-is board — an approximation, see
+        /// `Search.RolloutDiagnostics`). `value_rollout` (white perspective) is the mean of
+        /// win=1/draw=0.5/loss=0 over the `count` playouts; the leaf value is
+        /// `weightNetwork * e_nn(white) + (1 - weightNetwork) * value_rollout`. This blend needs
+        /// the async evaluator and a seeded RNG that this synchronous adapter doesn't have, so it
+        /// is computed by `Search.applyRollout`, not here — see `toWhite` below.
+        case rollout(count: Int, maxMoves: Int, weightNetwork: Float)
     }
 
     public var mode: Mode
@@ -59,6 +72,9 @@ public struct ValueSource: Sendable, Equatable {
     public static func ownership(k: Float = 6, b: Float = 1) -> ValueSource { ValueSource(mode: .ownership(k: k, b: b)) }
     public static func blend(weightNetwork: Float = 0.5, k: Float = 6, b: Float = 1) -> ValueSource {
         ValueSource(mode: .blend(weightNetwork: weightNetwork, k: k, b: b))
+    }
+    public static func rollout(count: Int = 8, maxMoves: Int, weightNetwork: Float = 0.5) -> ValueSource {
+        ValueSource(mode: .rollout(count: count, maxMoves: maxMoves, weightNetwork: weightNetwork))
     }
 
     /// `score_est = Σ_xy ownership_xy + komiSelf`, to-move perspective. `ownership` is
@@ -79,6 +95,7 @@ public struct ValueSource: Sendable, Equatable {
         case .network: return "network"
         case let .ownership(k, b): return "ownership(k=\(k),b=\(b))"
         case let .blend(w, k, b): return "blend(w=\(w),k=\(k),b=\(b))"
+        case let .rollout(count, maxMoves, w): return "rollout(count=\(count),maxMoves=\(maxMoves),w=\(w))"
         }
     }
 }
@@ -117,6 +134,14 @@ public enum EvaluationAdapter {
             // the blend weight (docs/spec/03-engine.md §3-4): only the value/expected-result term
             // is actually blended between e_nn and value_own.
             toMoveScore = scoreEst
+        case .rollout:
+            // `Search.expand` never actually calls this adapter with `.rollout` (it substitutes
+            // `.network` for the pre-rollout baseline, then `Search.applyRollout` overwrites the
+            // node's white value after the async playouts finish — see the case's doc comment
+            // above). This arm exists purely so the switch stays exhaustive for any other caller;
+            // it behaves exactly like `.network`.
+            toMoveExpected = e.expectedResult
+            toMoveScore = e.scoreMean
         }
 
         let whiteExpected = toMove == .white ? toMoveExpected : 1 - toMoveExpected

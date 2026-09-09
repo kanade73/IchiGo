@@ -24,9 +24,16 @@ public struct SearchSettings: Sendable {
     /// Leaf value source (docs/spec/03-engine.md §3-4 "値ソース"). `.network` (default) keeps the
     /// current behaviour (the NN's own wdl head, unmodified). `.ownership`/`.blend` route leaf
     /// expansion through `EvaluationAdapter.toWhite`'s ownership-derived value instead of, or
-    /// blended with, the network's. `SearchResult.rootRawExpected`/`rootRawWinDrawLoss` always
-    /// reflect the raw network output regardless of this setting.
+    /// blended with, the network's. `.rollout` runs policy-guided playouts through `Search`
+    /// itself (`applyRollout`), since that needs the async evaluator and `rolloutRNGSeed` below.
+    /// `SearchResult.rootRawExpected`/`rootRawWinDrawLoss` always reflect the raw network output
+    /// regardless of this setting.
     public var valueSource: ValueSource = .network
+    /// Seed for the `SplitMix64` RNG that samples playout moves for `ValueSource.rollout`
+    /// (docs/spec/03-engine.md §3-4 "値ソース"). Carried in settings — rather than injected
+    /// separately — so a whole search's playout sequence is reproducible from its
+    /// `SearchSettings` alone, given a deterministic evaluator. Unused by any other value source.
+    public var rolloutRNGSeed: UInt64 = 0x726F_6C6C_6F75_74
 
     public init() {}
 }
@@ -48,6 +55,19 @@ public struct MoveCandidate: Sendable, Equatable {
     public let scoreLead: Double
     public let order: Int
     public let pv: [MoveCoord]
+}
+
+/// Per-`run()`-call playout accounting for `ValueSource.rollout` (docs/implementation-status.md
+/// 2026-09-10 §4-5: "log per-genmove the average playouts per leaf and the fraction of playouts
+/// that hit maxMoves"). Reset at the start of every `Search.run(visits:deadline:)` call; queried
+/// via `Search.rolloutDiagnostics()` after the call returns. All zero when `valueSource` isn't
+/// `.rollout`, or before any leaf has been expanded.
+public struct RolloutDiagnostics: Sendable, Equatable {
+    public let leaves: Int
+    public let playouts: Int
+    public let maxMovesHit: Int
+    public var averagePlayoutsPerLeaf: Double { leaves > 0 ? Double(playouts) / Double(leaves) : 0 }
+    public var maxMovesHitFraction: Double { playouts > 0 ? Double(maxMovesHit) / Double(playouts) : 0 }
 }
 
 public struct SearchResult: Sendable, Equatable {
@@ -117,12 +137,22 @@ public actor Search {
     /// deadline stop margin (docs/spec/03-engine.md §8, `TimeManager.stopMargin`). Only populated
     /// by time-limited `run(visits:deadline:)` calls.
     private var recentBatchDurations: [Double] = []
+    /// RNG for `ValueSource.rollout` playout move sampling, seeded from `settings.rolloutRNGSeed`.
+    /// Advances across the whole search's lifetime (never reset per leaf or per `run()` call) so a
+    /// full genmove's playout sequence is reproducible from the settings alone.
+    private var rolloutRNG: SplitMix64
+    /// `ValueSource.rollout` diagnostics accumulated by the current `run()` call; reset at its
+    /// start. See `RolloutDiagnostics`/`rolloutDiagnostics()`.
+    private var rolloutLeaves = 0
+    private var rolloutPlayouts = 0
+    private var rolloutPlayoutsHitMaxMoves = 0
 
     public init(evaluator: any PositionEvaluating, modelHash: String, settings: SearchSettings = SearchSettings(), initial: GameRecord, clock: any MonotonicClock = SystemMonotonicClock()) throws {
         self.evaluator = evaluator
         self.modelHash = modelHash
         self.settings = settings
         self.clock = clock
+        rolloutRNG = SplitMix64(seed: settings.rolloutRNGSeed)
         root = SearchNode(state: try GameState(record: initial))
     }
 
@@ -139,6 +169,11 @@ public actor Search {
     public func rootVisits() -> Int { root.visits }
     public func nodeCountForTests() -> Int { nodeCount }
     public func currentGeneration() -> Int { generation }
+    /// `ValueSource.rollout` playout accounting for the most recent `run(visits:deadline:)` call
+    /// (reset at its start). All zero when `valueSource` isn't `.rollout`.
+    public func rolloutDiagnostics() -> RolloutDiagnostics {
+        RolloutDiagnostics(leaves: rolloutLeaves, playouts: rolloutPlayouts, maxMovesHit: rolloutPlayoutsHitMaxMoves)
+    }
 
     /// Plays `move` at the root. Promotes the existing child subtree when tree reuse is enabled
     /// and the child's full-state fingerprint equals the freshly replayed position; otherwise the
@@ -190,6 +225,9 @@ public actor Search {
     /// nothing it observed after the mismatch was ever applied to the tree.
     public func run(visits target: Int, deadline: Double? = nil) async throws -> SearchResult {
         let gen = generation
+        rolloutLeaves = 0
+        rolloutPlayouts = 0
+        rolloutPlayoutsHitMaxMoves = 0
         if root.terminal != nil { return try result(chosen: .pass) }
         if !root.evaluated {
             try await evaluateBatch([SearchPath(nodes: [root], edgeIndices: [])], generation: gen)
@@ -355,7 +393,26 @@ public actor Search {
             guard evals.count == need.count else { throw SearchError(message: "evaluator returned \(evals.count) results for \(need.count) leaves") }
             for (path, (snap, e)) in zip(need, zip(snaps, evals)) {
                 let leaf = path.nodes.last!
-                if !leaf.evaluated { expand(leaf, snapshot: snap, evaluation: e) }
+                guard !leaf.evaluated else { continue }
+                if case let .rollout(count, maxMoves, weightNetwork) = settings.valueSource.mode {
+                    // `ValueSource.rollout` needs the async evaluator (for playout policy), so it
+                    // can't run inside the synchronous `expand` below. It's computed as a pure
+                    // function of `leaf.state`/`e` first (no node mutation at all) — every
+                    // `evaluator.evaluate` call inside is itself a reentrancy point on this actor
+                    // (same as the call above), so `expand` (which marks the node `evaluated` and
+                    // is what makes it un-retryable) is deferred until *after* the rollout
+                    // finishes and the generation is re-checked. A mid-rollout `makeMove`/`reset`
+                    // therefore drops this leaf exactly like the guard above (never expanded, so a
+                    // later visit retries it cleanly) instead of leaving it half-expanded.
+                    let blended = try await rolloutBlendedWhiteValue(leafState: leaf.state, networkEvaluation: e, snapshot: snap, count: count, maxMoves: maxMoves, weightNetwork: weightNetwork)
+                    guard gen == generation else {
+                        releaseAll(batch)
+                        return
+                    }
+                    expand(leaf, snapshot: snap, evaluation: e, overrideWhiteValue: blended)
+                } else {
+                    expand(leaf, snapshot: snap, evaluation: e)
+                }
             }
         }
         for path in batch {
@@ -365,10 +422,15 @@ public actor Search {
         }
     }
 
-    private func expand(_ node: SearchNode, snapshot: PositionSnapshot, evaluation e: LogicEvaluation) {
-        let w = EvaluationAdapter.toWhite(e, snapshot: snapshot, valueSource: settings.valueSource)
+    private func expand(_ node: SearchNode, snapshot: PositionSnapshot, evaluation e: LogicEvaluation, overrideWhiteValue: Double? = nil) {
+        // `overrideWhiteValue` is how `ValueSource.rollout` plugs in: the caller already computed
+        // the network/rollout blend (`rolloutBlendedWhiteValue`) as a pure function before this
+        // node was touched at all, so `expand` just needs to use it instead of the plain
+        // `.network` conversion below. `node.rawExpected`/`rawWDL` are always the untouched raw
+        // network output regardless of value source, same as every other mode.
+        let w = EvaluationAdapter.toWhite(e, snapshot: snapshot, valueSource: overrideWhiteValue != nil ? .network : settings.valueSource)
         node.evaluated = true
-        node.nnWhiteValue = Double(w.whiteWinValue)
+        node.nnWhiteValue = overrideWhiteValue ?? Double(w.whiteWinValue)
         node.nnWhiteScore = Double(w.whiteScoreMean)
         node.rawExpected = Double(e.expectedResult)
         node.rawWDL = e.winDrawLoss
@@ -379,6 +441,79 @@ public actor Search {
             edges.append(SearchNode.Edge(index: i, move: try! Coordinates.move(fromIndex: i, size: S), prior: Double(e.policy[i])))
         }
         node.edges = edges  // ascending policy index → deterministic tie-break
+    }
+
+    /// Runs `count` playouts from `leafState` in lock-step (docs/implementation-status.md
+    /// 2026-09-10 §4-5), as a pure computation that never touches the search tree (see the call
+    /// site's comment on why): every step evaluates every still-live playout line's policy in one
+    /// `evaluator.evaluate` call (a line whose game has already ended by two passes drops out of
+    /// that call), then samples one move per line (temperature 1 over legal moves, pass included)
+    /// and plays it. A line not finished after `maxMoves` steps is scored as-is — an approximation
+    /// — via `history.endAndScoreGameNow` on its own copy; this is tracked in
+    /// `rolloutPlayoutsHitMaxMoves` for `RolloutDiagnostics` (updated here regardless of whether
+    /// the caller ends up discarding the result to a generation race — the diagnostics are
+    /// best-effort logging, not part of the tree's correctness). `value_rollout` (white
+    /// perspective) is the mean of win=1/draw=0.5/loss=0 over the `count` lines; the result is
+    /// `2 * (weightNetwork * e_nn(white) + (1 - weightNetwork) * value_rollout) - 1`, matching the
+    /// `[-1, 1]` white-value scale `SearchNode.nnWhiteValue` uses everywhere else.
+    private func rolloutBlendedWhiteValue(
+        leafState: GameState, networkEvaluation e: LogicEvaluation, snapshot: PositionSnapshot, count: Int, maxMoves: Int, weightNetwork: Float
+    ) async throws -> Double {
+        let eNNWhiteExpected = Double(EvaluationAdapter.toWhite(e, snapshot: snapshot, valueSource: .network).whiteExpected)
+        guard count > 0 else { return 2 * eNNWhiteExpected - 1 }
+        rolloutLeaves += 1
+
+        let lines = (0 ..< count).map { _ in leafState.copy() }
+        var finished = [Bool](repeating: false, count: count)
+        var step = 0
+        while step < maxMoves {
+            let active = (0 ..< count).filter { !finished[$0] }
+            if active.isEmpty { break }
+            let snaps = active.map { lines[$0].snapshot() }
+            let evals = try await evaluator.evaluate(snaps)
+            guard evals.count == active.count else {
+                throw SearchError(message: "evaluator returned \(evals.count) results for \(active.count) rollout playouts")
+            }
+            for (k, idx) in active.enumerated() {
+                let snap = snaps[k]
+                let move = Self.samplePlayoutMove(policy: evals[k].policy, boardSize: snap.boardSize, rng: &rolloutRNG)
+                try! lines[idx].play(snap.toMove, move, assumeLegal: true)  // sampled only from `s.legal`-masked policy mass
+                if lines[idx].history.isGameFinished { finished[idx] = true }
+            }
+            step += 1
+        }
+
+        var winSum: Double = 0
+        for i in 0 ..< count {
+            rolloutPlayouts += 1
+            if !finished[i] {
+                rolloutPlayoutsHitMaxMoves += 1
+                lines[i].history.endAndScoreGameNow(lines[i].board)  // approximation: scores the as-is board (docs task §3)
+            }
+            guard let outcome = lines[i].exactWhiteOutcome else {
+                throw SearchError(message: "rollout playout did not produce a scored outcome")
+            }
+            winSum += (Double(outcome.value) + 1) / 2   // win=1, draw=0.5, loss=0, white perspective
+        }
+        let valueRollout = winSum / Double(count)
+        let blended = Double(weightNetwork) * eNNWhiteExpected + Double(1 - weightNetwork) * valueRollout
+        return 2 * blended - 1
+    }
+
+    /// Samples one move from `policy` ([S*S+1], masked softmax over legal moves so it already sums
+    /// to 1 over legal moves and is exactly 0 elsewhere — docs/spec/01-network.md §5) using `rng`.
+    /// Falls back to the last positive-mass index on floating-point rounding so this always returns
+    /// a legal move.
+    private static func samplePlayoutMove(policy: [Float], boardSize: Int, rng: inout SplitMix64) -> MoveCoord {
+        let r = Double.random(in: 0 ..< 1, using: &rng)
+        var cumulative: Double = 0
+        var lastPositive = policy.count - 1
+        for i in policy.indices {
+            if policy[i] > 0 { lastPositive = i }
+            cumulative += Double(policy[i])
+            if r < cumulative { return try! Coordinates.move(fromIndex: i, size: boardSize) }
+        }
+        return try! Coordinates.move(fromIndex: lastPositive, size: boardSize)
     }
 
     private func backup(_ path: SearchPath, whiteValue: Double, whiteScore: Double) {
