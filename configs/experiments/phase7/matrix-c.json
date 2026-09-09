@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p9-c1024-local-headv3-200k",
+      "gpu": 7,
+      "config": "configs/experiments/phase7/p9-c1024-local-headv3-200k.json",
+      "out": "runs/p9-c1024-local-headv3-200k"
+    },
+    {
+      "runId": "p9-c2048-local-headv3-200k",
+      "gpu": 0,
+      "config": "configs/experiments/phase7/p9-c2048-local-headv3-200k.json",
+      "out": "runs/p9-c2048-local-headv3-200k"
+    }
+  ]
+}

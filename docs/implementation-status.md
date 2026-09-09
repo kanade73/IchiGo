@@ -494,3 +494,10 @@ A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/
 ### 2026-09-10 09:30: head v3 の対局検証
 
 - `p7-small-headv3`（MAE 0.277）vs `p3-small-gl10-local`（head v2、MAE 0.294）、各 400 visits、固定開局 50 × 色交換: 44 勝 5 分 51 敗、平均 0.465、CI [0.37, 0.56]、事故 0。**value の MAE 改善 0.017 は対局では有意差にならない。** head v3 の wide512・base・3 倍データ・200k 版（phase 8）の結果で改めて判断する。
+
+### 2026-09-10 11:00: 表現力の壁への次の一手（判断メモ）
+
+- soft（連続緩和）段階でも policy top1 は 0.36〜0.39 で頭打ち → 離散化ではなく緩和モデル自体の容量/最適化の限界。
+- 計算量比較: CNN baseline は 1 局面あたり約 30 万 MAC、small は 2,048 ゲート評価、wide512 でも 4,096。2 桁の差があり、公平な比較にはゲート数を 1 桁以上増やす必要がある。→ phase 9a: C=1024（GPU 7、0.25 秒/step、4.1 GB）、C=2048（GPU 空き次第）。
+- 2 入力ゲートは 16 関数しか表せず、多入力関数には深い木が要る。FPGA の LUT4 のような 4 入力真理値表ゲート（65,536 関数、推論は厳密なビット演算のまま）を実験拡張として実装中（phase 9b、Codex）。gateEncoding `lut4-msb-first`、gates.u16、wiring [L,C,4,4]。Metal は当面未対応（CPU packed で推論）。
+- rollout value の A/B は実行中。
