@@ -270,6 +270,67 @@ def test_ddp_full_run_hits_validation_and_checkpoint_intervals(tmp_path):
     assert th["scalingEfficiency"] == pytest.approx(th["throughputRatio"] / 2)
 
 
+@pytest.mark.skipif(not _spawn_available(), reason="torch.multiprocessing spawn / gloo backend unavailable")
+def test_ddp_full_run_crosses_into_heads_only_stage(tmp_path):
+    """Regression test for the "Expected to mark a variable ready only once" DDP crash that hit
+    real 2-GPU runs at the first optimizer step of stage 3 (every gate layer frozen -- schedule
+    state ``frozen_prefix == layers``, ``heads_only == True``).
+
+    Root cause: ``train_step`` unconditionally added ``gate_entropy_loss(model.theta, ...)`` into
+    the per-microbatch loss that gets ``backward()``-ed, but that term depends on ``model.theta``
+    directly -- *outside* the ``fmodel(...)`` (DDP-wrapped) forward call whose output
+    DistributedDataParallel's ``find_unused_parameters=True`` traversal inspects to decide which
+    parameters are unused this iteration. Once every layer is frozen, ``fmodel(...)``'s forward
+    never touches theta (``soft_layers`` uses only detached argmax gates), so DDP's traversal marks
+    theta "unused"/ready as soon as the forward returns -- but the entropy term then fires theta's
+    real gradient-ready hook a second time in the same ``backward()`` call, which is exactly DDP's
+    "mark ready only once" invariant. The fix (train.py's ``train_step``) simply skips the entropy
+    term while ``heads_only`` is True: theta's gradient is unconditionally discarded a few lines
+    later in that stage regardless (``model.theta.grad = None``), so omitting the term changes no
+    single-process numerics -- it only removes the out-of-forward theta dependency that confused
+    DDP.
+
+    2 real gloo/CPU processes, microBatch 4 x accumulation 2 (effectiveBatch 16, world 2, so
+    ``resolve_accumulation`` gives each rank 2 microbatches per optimizer step -- reproduces with
+    actual gradient accumulation, matching the real run this was found in) and maxSteps 10, which
+    with the default prefix-60-30-10 schedule and the "tiny" profile's 4 layers gives s1_end=6,
+    s2_end=9: the run passes through stage 1 (steps 0-5, all soft), stage 2 (steps 6-8, layers
+    freezing one at a time), and reaches stage 3 (step 9, heads_only) as its very last optimizer
+    step -- exactly the scenario that crashed real training at step 90 of a 100-step schedule.
+    Before the fix this reliably crashed both ranks (non-zero exit, no run-summary.json); after the
+    fix both ranks must finish cleanly and rank 0 must write a run-summary.json with
+    stepsTrained == maxSteps."""
+    import torch.multiprocessing as mp
+
+    n = 24
+    make_fixture(tmp_path / "fx", n=n, seed=17)
+
+    steps = 10
+    assert resolve_accumulation(effective_batch=16, micro_batch=4, world_size=2) == 2
+    ddp_cfg = write_config(tmp_path / "ddp.json", tmp_path / "fx", tmp_path / "run-ddp",
+                            microBatch=4, effectiveBatch=16, maxSteps=steps, validationInterval=5,
+                            checkpointInterval=5, maxValidationPositions=16)
+    port = _free_port()
+    status_dir = tmp_path / "status"
+    status_dir.mkdir()
+    mp.spawn(_run_worker, args=(2, port, ddp_cfg, str(status_dir)), nprocs=2, join=True)
+
+    statuses = {}
+    for r in range(2):
+        with open(status_dir / f"status-{r}.json") as f:
+            statuses[r] = json.load(f)
+    assert statuses[0]["returnCode"] == 0 and statuses[1]["returnCode"] == 0, statuses
+
+    out = tmp_path / "run-ddp"
+    assert (out / "run-summary.json").exists()
+    summary = json.load(open(out / "run-summary.json"))
+    assert summary["stepsTrained"] == steps
+    assert summary["completed"] is True
+    assert summary["worldSize"] == 2
+    assert summary["finalGatesAllFrozen"] is True
+    assert summary["frozenPrefix"] == 4  # "tiny" profile: 4 logic-gate layers, all frozen by stage 3
+
+
 def test_trainer_wraps_ddp_before_any_validation_collective(monkeypatch, tmp_path):
     """Unit-level regression test for the collective-ordering invariant this module's docstring and
     Trainer._verify_ddp_param_consistency document: DistributedDataParallel must wrap the model

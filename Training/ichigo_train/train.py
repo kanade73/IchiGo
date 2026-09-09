@@ -273,10 +273,22 @@ class Trainer:
             out = fmodel(t["spatial"], t["global"], tau=st.tau, frozen_prefix=st.frozen_prefix,
                          gumbel_noise=gumbel_noise, tau_wire=tau_wire)
             r = L.compute_losses(out, t, self.S, weight_denominators=global_sums, numerator_scale=float(self.world_size))
-            # Rebuild this small graph for every microbatch; the same regularizer is divided by
-            # accumulation so the optimizer-step contribution is exactly one weighted entropy.
-            gate_entropy = G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"])
-            loss = r["total"] + gate_entropy / self.accum
+            loss = r["total"]
+            if not st.heads_only:
+                # Rebuild this small graph for every microbatch; the same regularizer is divided
+                # by accumulation so the optimizer-step contribution is exactly one weighted
+                # entropy. Skipped entirely when heads_only: theta.grad is unconditionally
+                # discarded a few lines below in that stage regardless of what this term would
+                # have contributed, so omitting it is a no-op for the resulting parameters -- but
+                # *not* a no-op under DDP. ``fmodel(...)``'s forward never touches theta once every
+                # layer is frozen, so DDP's find_unused_parameters traversal (seeded only from that
+                # forward's own output) marks theta ready/unused as soon as the forward returns.
+                # Backpropagating this term anyway -- it depends on ``model.theta`` directly,
+                # outside the DDP-tracked forward -- would fire theta's real gradient-ready hook a
+                # second time in the same backward pass, which is exactly DDP's "Expected to mark a
+                # variable ready only once" check.
+                gate_entropy = G.gate_entropy_loss(model.theta, st.tau, cfg["gateEntropyWeight"])
+                loss = loss + gate_entropy / self.accum
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite loss at step {self.step}")
             loss.backward()
