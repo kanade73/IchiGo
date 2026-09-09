@@ -387,3 +387,11 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 - `heads.metal`は`u_xy`/`u_global`をbufferへ材料化せず、入力segment（h/m/v/global、または m/v/zbar/ownMean/global）ごとに64/128次元accumulatorへ直接累積する設計とし、`LOCAL_HIDDEN`/`GLOBAL_HIDDEN`をcompile-time定数にすることで可変長thread-local配列を回避した。
 - `MetalPackedBackend.evaluate`はgate+headsを1 command bufferへfuseする（T24契約）。ベンチマークのgate_ms/head_ms分離のためだけに`evaluateTimed`が2 command bufferへ分ける別経路を持つ（実運用の`evaluate`とは独立）。
 - 入力のbatch方向packingはCPU側（`PackBits.pack`、S*S*C回のbit set操作のみで軽量）で行い、GPUへは packed bufferとしてアップロードする。pack自体のtimingは`pack_ms`列へ分離せず`gate_ms`へ含めた（コストが無視できるほど小さいため、T22時点から変更していない`feature_ms`/`pack_ms`=0固定の扱いを踏襲）。
+
+### 2026-09-09 夕方: T23/T24 と実対局速度
+
+- T23（CPU-packed / Metal-packed）、T24（Metal heads）、CPU head の Accelerate 化を実装（commit 3047ad6）。ベンチ（M5、small 9 路）: B=32 で cpu-packed 15,386 局面/秒、metal 11,760、metal-packed 11,599（B=64 で 20,536）。§7 の目標（B=1 p95 ≤ 20 ms、B=32 ≥ 1,000/秒）を golden CPU 以外の全 backend で達成。backend profile は B=1/8→metal、B=32→cpu-packed、B=64→metal-packed。
+- 実対局: `ichigo gtp --backend auto` で 1 手 1.2 秒に 8,000〜10,000 visits（従来 500）。
+- Swift 163 + Metal 66（skip 1）、pytest 189 通過。
+- T26 検収（1 GPU vs 2 GPU、100 step、resume）をサーバーの空き GPU 0/3 で実行中。4 GPU 検収は phase 4/5 完了後に実施。
+- phase 4 最良モデル `p4-local-gl30-200k` を export、Swift parity PASS、uniform baseline 100 局を実行中。
