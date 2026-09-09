@@ -35,18 +35,23 @@ public actor LogicEvaluator: PositionEvaluating {
     public let capabilities: ModelCapabilities
     public let modelHash: String
     private let backend: any LogicBackend
+    /// docs/spec/03-engine.md §9: divides the wdl logits before softmax so search sees the same
+    /// calibrated evaluation as `ichigo eval`/analysis. From `model.manifest.calibrationTemperature`.
+    private let temperature: Float
 
     public init(model: LogicModelData, backend: any LogicBackend) {
         capabilities = ModelCapabilities(boardSizes: Set(model.manifest.boardSizes), rulesID: ModelManifest.rulesID, hasOwnership: true)
         modelHash = model.payloadHash
         self.backend = backend
+        temperature = model.manifest.calibrationTemperature
     }
 
     /// Test/alternate-backend initialiser (fake evaluators live in Tests only).
-    public init(capabilities: ModelCapabilities, modelHash: String, backend: any LogicBackend) {
+    public init(capabilities: ModelCapabilities, modelHash: String, backend: any LogicBackend, temperature: Float = 1.0) {
         self.capabilities = capabilities
         self.modelHash = modelHash
         self.backend = backend
+        self.temperature = temperature
     }
 
     public func evaluate(_ positions: [PositionSnapshot]) async throws -> [LogicEvaluation] {
@@ -57,7 +62,7 @@ public actor LogicEvaluator: PositionEvaluating {
         let enc = try FeatureEncoder.encode(positions)
         let features = try FeatureBatch(boardSize: enc.boardSize, batch: enc.batch, spatial: enc.spatial, global: enc.global, legal: enc.legal)
         let raw = try await backend.evaluate(features: features)
-        let out = try Postprocess.evaluate(raw: raw, features: features)
+        let out = try Postprocess.evaluate(raw: raw, features: features, temperature: temperature)
         guard out.count == positions.count else { throw EvaluatorError.countMismatch }
         return out
     }

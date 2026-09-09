@@ -40,11 +40,48 @@ def load_checkpoint(path: str) -> LogicNet:
     return model
 
 
-def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: dict | None = None, overwrite: bool = False) -> dict:
+def _calibration_provenance(calibration: dict | None) -> tuple[float, dict]:
+    """docs/spec/03-engine.md §9 / docs/spec/05-validation.md §5 (T29): resolve a loaded
+    ``calibrate`` report (``ichigo_train.calibrate.run_calibration``'s JSON) into the manifest's
+    ``calibrationTemperature`` plus a ``trainingProvenance.calibration`` record.
+
+    Absent, or present but fit on zero real-result validation positions (``verified`` false --
+    "教師予測だけしかない場合は校正未検証、T=1を保持する"), keeps the safe default: T=1.0,
+    status "unverified". A verified report contributes its fitted T and the held-out test
+    Brier/ECE at both T=1 and the fitted T; this is NN (root raw) calibration only -- search
+    winrates are a separate metric that this temperature does not itself measure."""
+    if calibration is None:
+        return 1.0, {"status": "unverified"}
+    if not calibration.get("verified", False):
+        return 1.0, {"status": "unverified", "reason": "calibration report had no real-result validation positions"}
+    t = float(calibration["fittedTemperature"])
+    test = calibration.get("test", {})
+    t1, fitted = test.get("T1", {}), test.get("fitted", {})
+    return t, {
+        "status": "fitted",
+        "temperature": t,
+        "scope": "raw root NN calibration only (forward_hard -> softmax(wdl_logits/T)); search-derived winrates are a separate metric (docs/spec/05-validation.md §5)",
+        "testGames": test.get("games"),
+        "testPositions": test.get("positions"),
+        "testInsufficientSamples": test.get("insufficientSamples"),
+        "testBrierT1": t1.get("brier"),
+        "testBrierFitted": fitted.get("brier"),
+        "testECET1": t1.get("ece"),
+        "testECEFitted": fitted.get("ece"),
+        "testBrierFittedCI": fitted.get("brierGameBootstrapCI"),
+    }
+
+
+def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: dict | None = None, overwrite: bool = False,
+                 calibration: dict | None = None) -> dict:
     """Write ``out`` (a directory). Returns the manifest.
 
     Learned wiring is resolved to its argmax fixed wiring (with the A!=B fallback) before the
     normal ``.ichigo`` serializer runs; the on-disk format remains unchanged.
+
+    ``calibration`` (optional) is a loaded ``calibrate`` report dict (T29); see
+    ``_calibration_provenance`` for how it maps to ``calibrationTemperature`` and
+    ``trainingProvenance.calibration``.
     """
     out = os.path.normpath(out)
     if os.path.lexists(out):
@@ -56,7 +93,10 @@ def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: 
     prov.setdefault("generatedAt", _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"))
     prov.setdefault("seed", model.spec.seed)
     prov.setdefault("profile", model.spec.profile)
-    files = MF.serialize_model(model.wiring_numpy(), model.hard_gates(), model.head_numpy(), model.dilations, board_sizes, prov, head_version=model.head_version)
+    temperature, calib_prov = _calibration_provenance(calibration)
+    prov["calibration"] = calib_prov
+    files = MF.serialize_model(model.wiring_numpy(), model.hard_gates(), model.head_numpy(), model.dilations, board_sizes, prov,
+                               calibration_temperature=temperature, head_version=model.head_version)
     parent = os.path.dirname(out) or "."
     os.makedirs(parent, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix=".export-", dir=parent)
@@ -93,10 +133,15 @@ def _verify_roundtrip(model: LogicNet, loaded: MF.LoadedModel) -> None:
 
 
 def model_from_loaded(loaded: MF.LoadedModel) -> LogicNet:
-    """Rebuild a LogicNet whose argmax gates equal the file's gates (theta = one-hot*3)."""
+    """Rebuild a LogicNet whose argmax gates equal the file's gates (theta = one-hot*3).
+
+    Sets a ``calibration_temperature`` attribute (docs/spec/03-engine.md §9) from the manifest,
+    for evaluate paths that read a loaded ``.ichigo`` model to pass into ``model.postprocess``."""
     m = loaded.manifest
     spec = ModelSpec(channels=m["channels"], dilations=list(m["dilations"]), seed=0)
     L, C = loaded.gates.shape
     theta = np.zeros((L, C, 16), dtype=np.float32)
     theta[np.arange(L)[:, None], np.arange(C)[None, :], loaded.gates.astype(np.int64)] = 3.0
-    return LogicNet(spec, Wiring(wiring=loaded.wiring, theta=theta, dilations=spec.dilations), heads=loaded.heads, head_version=int(m["headVersion"]))
+    model = LogicNet(spec, Wiring(wiring=loaded.wiring, theta=theta, dilations=spec.dilations), heads=loaded.heads, head_version=int(m["headVersion"]))
+    model.calibration_temperature = float(m.get("calibrationTemperature", 1.0))
+    return model

@@ -78,15 +78,51 @@ def cmd_export(args) -> int:
     except (OSError, KeyError, ValueError) as e:
         print(f"error: cannot load checkpoint: {e}", file=sys.stderr)
         return EXIT_INPUT
+    calibration = None
+    if args.calibration:
+        try:
+            with open(args.calibration) as f:
+                calibration = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"error: cannot read --calibration {args.calibration}: {e}", file=sys.stderr)
+            return EXIT_INPUT
     try:
-        manifest = export_model(model, args.out, args.board_sizes, {"checkpoint": os.path.basename(args.checkpoint)}, overwrite=args.overwrite)
+        manifest = export_model(model, args.out, args.board_sizes, {"checkpoint": os.path.basename(args.checkpoint)},
+                                overwrite=args.overwrite, calibration=calibration)
     except FileExistsError as e:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_CONFIG
     except ModelFormatError as e:
         print(f"error: export verification failed: {e}", file=sys.stderr)
         return EXIT_INPUT
-    print(json.dumps({"out": args.out, "files": manifest["files"]}, indent=2))
+    print(json.dumps({"out": args.out, "files": manifest["files"], "calibrationTemperature": manifest["calibrationTemperature"]}, indent=2))
+    return EXIT_OK
+
+
+def cmd_sgf_results(args) -> int:
+    from .sgf_results import build_results
+
+    if not os.path.isdir(args.sgf_dir) or not os.path.isfile(args.positions):
+        print("error: --sgf-dir/--positions not found", file=sys.stderr)
+        return EXIT_INPUT
+    report = build_results(args.sgf_dir, args.positions, args.out)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return EXIT_OK if report["gamesWritten"] > 0 else EXIT_INPUT
+
+
+def cmd_calibrate(args) -> int:
+    from .calibrate import run_calibration
+
+    if not os.path.isfile(args.results):
+        print("error: --results not found", file=sys.stderr)
+        return EXIT_INPUT
+    report = run_calibration(args.checkpoint, args.data, args.results, args.out, resamples=args.resamples, seed=args.seed)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    if not report["verified"]:
+        print("warning: no real-result validation positions found; temperature fit kept at T=1 (unverified)", file=sys.stderr)
+    if report["test"]["insufficientSamples"]:
+        print(f"warning: only {report['test']['games']} complete test games with results (< {report['test']['minCompleteGames']}); "
+              "calibration sample is insufficient", file=sys.stderr)
     return EXIT_OK
 
 
@@ -272,6 +308,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", required=True)
     e.add_argument("--board-sizes", type=int, nargs="+", default=[9])
     e.add_argument("--overwrite", action="store_true")
+    e.add_argument("--calibration", default=None, help="calibrate report.json (T29); sets manifest.calibrationTemperature "
+                                                        "and trainingProvenance.calibration (default: unverified, T=1.0)")
     e.set_defaults(func=cmd_export)
     n = sub.add_parser("inspect", help="Validate a .ichigo directory and print its manifest.")
     n.add_argument("--model", required=True)
@@ -338,6 +376,19 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--genmove-timeout", type=float, default=None, help="per-genmove timeout (seconds); default max(120, 4*time-main-seconds)")
     m.add_argument("--resamples", type=int, default=10000, help="bootstrap resamples for report.json's confidence intervals")
     m.set_defaults(func=cmd_match)
+    sr = sub.add_parser("sgf-results", help="Parse each SGF's RE tag into a real game-result JSONL (docs/spec/05-validation.md §5, T29).")
+    sr.add_argument("--sgf-dir", required=True)
+    sr.add_argument("--positions", required=True, help="positions JSONL (the `features` CLI's output) for the sourceFile->gameId map")
+    sr.add_argument("--out", required=True)
+    sr.set_defaults(func=cmd_sgf_results)
+    cal = sub.add_parser("calibrate", help="Fit a WDL calibration temperature on real-result positions and report Brier/ECE (docs/spec/05-validation.md §5, T29).")
+    cal.add_argument("--checkpoint", required=True)
+    cal.add_argument("--data", required=True, help="shard v1 dataset directory (ideally built with `build-data --results`)")
+    cal.add_argument("--results", required=True, help="sgf-results JSONL ({gameId,result,kind})")
+    cal.add_argument("--out", required=True)
+    cal.add_argument("--resamples", type=int, default=10000)
+    cal.add_argument("--seed", type=int, default=20260908)
+    cal.set_defaults(func=cmd_calibrate)
     return p
 
 

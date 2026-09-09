@@ -113,6 +113,31 @@ def test_postprocess_masks_illegal():
         postprocess(logits, np.zeros((1, 4), dtype=np.uint8), np.zeros((1, 3), dtype=np.float32))
 
 
+def test_postprocess_temperature_scales_wdl_logits_only():
+    """docs/spec/03-engine.md §9 (T29 calibration): T divides the wdl logits before softmax and
+    never touches the policy softmax. Golden numbers match
+    Tests/LogicModelTests/PostprocessTemperatureTests.swift's `softmax([2,0,-2]/T)` -- this is
+    the Python half of T29's "Swift/Python postprocess agree on a small example" check."""
+    policy_logits = np.zeros((1, 2), dtype=np.float32)
+    legal = np.array([[1, 0]], dtype=np.uint8)
+    wdl_logits = np.array([[2.0, 0.0, -2.0]], dtype=np.float32)
+
+    base = postprocess(policy_logits, legal, wdl_logits)
+    t1 = postprocess(policy_logits, legal, wdl_logits, temperature=1.0)
+    t2 = postprocess(policy_logits, legal, wdl_logits, temperature=2.0)
+
+    np.testing.assert_allclose(base["wdl"][0], [0.8668133, 0.1173104, 0.0158762], atol=1e-6)
+    np.testing.assert_allclose(t1["wdl"][0], base["wdl"][0])
+    assert abs(float(base["expected_result"][0]) - 0.9254685) < 1e-6
+
+    np.testing.assert_allclose(t2["wdl"][0], [0.6652410, 0.2447285, 0.0900306], atol=1e-6)
+    assert abs(float(t2["expected_result"][0]) - 0.7876052) < 1e-6
+    # temperature never touches the policy
+    np.testing.assert_array_equal(t2["policy"], base["policy"])
+    with pytest.raises(ValueError):
+        postprocess(policy_logits, legal, wdl_logits, temperature=0.0)
+
+
 # ---- T33: bank1_ratio / wiring_seed (docs/spec/04-tasks.md T33) ----
 
 def test_default_wiring_reproducibility_is_bit_for_bit_unchanged():

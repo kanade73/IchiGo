@@ -22,7 +22,12 @@ let package = Package(
         .target(name: "IchiGoCore"),
         .target(name: "IchiGoFeatures", dependencies: ["IchiGoCore"]),
         .target(name: "LogicModel"),
-        .target(name: "LogicMetal", dependencies: ["LogicModel"]),
+        // .metal kernel source ships as a plain resource (SwiftPM tools 6.0 does not run the
+        // `metal`/`metallib` compiler over target resources the way Xcode's build system does; a
+        // `.process`/`.copy` resource is copied verbatim into the resource bundle). MetalBackend
+        // reads the source text from `Bundle.module` and compiles it at runtime with
+        // `MTLDevice.makeLibrary(source:options:)` instead.
+        .target(name: "LogicMetal", dependencies: ["LogicModel"], resources: [.copy("Resources")]),
         .target(name: "IchiGoEngine", dependencies: ["IchiGoCore", "IchiGoFeatures", "LogicModel"]),
         .target(name: "IchiGoGTP", dependencies: ["IchiGoEngine"]),
         .executableTarget(
@@ -38,5 +43,8 @@ let package = Package(
         .testTarget(name: "LogicModelTests", dependencies: ["LogicModel"]),
         .testTarget(name: "IchiGoEngineTests", dependencies: ["IchiGoEngine"]),
         .testTarget(name: "IchiGoGTPTests", dependencies: ["IchiGoGTP"]),
+        // Metal-only: parity + lifecycle tests against a real MTLDevice. `make check-cpu` never
+        // filters this target in; `make check-metal` / `make parity-metal` do.
+        .testTarget(name: "LogicMetalTests", dependencies: ["LogicMetal", "LogicModel"]),
     ]
 )

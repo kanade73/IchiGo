@@ -29,11 +29,11 @@ check-training: ## Python loss/gradcheck/resume/freeze tests (M1: only gate/form
 fixtures: ## Regenerate shared fixtures only
 	cd Training && $(UV) run python -m ichigo_train make-fixtures --out ../$(FIXTURES)
 
-check-metal: ## Metal kernel/loader/lifecycle tests (T22+)
-	@echo "check-metal: not implemented until T22 (Metal backend)"; exit 1
+check-metal: ## Metal kernel/loader/lifecycle tests (Mac Metal; skips cleanly with no device)
+	$(SWIFT) test --filter 'LogicMetalTests'
 
-parity-metal: ## CPU scalar vs Metal parity (T22+)
-	@echo "parity-metal: not implemented until T22 (Metal backend)"; exit 1
+parity-metal: ## CPU scalar vs Metal-byte parity, both board sizes (regenerates nothing)
+	$(SWIFT) test --filter 'LogicMetalTests.MetalParityTests'
 
 check-cuda: ## CUDA forward/backward and DDP tests (T17/T26, university GPUs)
 	@echo "check-cuda: not implemented until T17/T26"; exit 1

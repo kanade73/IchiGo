@@ -352,11 +352,18 @@ class LogicNet(nn.Module):
         return self.heads_forward(outs[-1].to(torch.float32), glob.to(torch.float32))
 
 
-def postprocess(policy_logits: np.ndarray, legal: np.ndarray, wdl_logits: np.ndarray) -> dict[str, np.ndarray]:
+def postprocess(policy_logits: np.ndarray, legal: np.ndarray, wdl_logits: np.ndarray, temperature: float = 1.0) -> dict[str, np.ndarray]:
     """Stable masked softmax (docs/spec/03-engine.md §3). Illegal moves get exactly 0.
-    Raises if a row has no legal move or logits are non-finite."""
+    Raises if a row has no legal move or logits are non-finite.
+
+    ``temperature`` (docs/spec/03-engine.md §9, T29 calibration) divides ``wdl_logits`` before
+    the softmax -- ``q = softmax(wdl_logits / T)`` -- and never touches the policy softmax. The
+    default 1.0 is a no-op; callers that hold a loaded ``.ichigo`` model should pass
+    ``model.calibration_temperature`` (set by ``export.model_from_loaded``)."""
     if not (np.isfinite(policy_logits).all() and np.isfinite(wdl_logits).all()):
         raise ValueError("non-finite logits")
+    if not (math.isfinite(temperature) and temperature > 0):
+        raise ValueError("temperature must be positive and finite")
     legal = legal.astype(bool)
     if not legal.any(axis=1).all():
         raise ValueError("a position has no legal move")
@@ -364,7 +371,7 @@ def postprocess(policy_logits: np.ndarray, legal: np.ndarray, wdl_logits: np.nda
     mx = masked.max(axis=1, keepdims=True)
     e = np.where(legal, np.exp(masked - mx), 0.0)
     policy = e / e.sum(axis=1, keepdims=True)
-    w = wdl_logits.astype(np.float64)
+    w = wdl_logits.astype(np.float64) / float(temperature)
     w = np.exp(w - w.max(axis=1, keepdims=True))
     wdl = w / w.sum(axis=1, keepdims=True)
     expected = wdl[:, 0] + 0.5 * wdl[:, 1]

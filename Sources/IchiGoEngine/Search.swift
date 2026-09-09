@@ -70,6 +70,7 @@ final class SearchNode {
     var whiteValueSum: Double = 0
     var whiteScoreSum: Double = 0
     var edges: [Edge] = []
+    var stateFingerprint: String?
 
     struct Edge {
         let index: Int
@@ -88,6 +89,14 @@ final class SearchNode {
 
     var meanWhiteValue: Double { visits > 0 ? whiteValueSum / Double(visits) : nnWhiteValue }
     var meanWhiteScore: Double { visits > 0 ? whiteScoreSum / Double(visits) : nnWhiteScore }
+}
+
+/// A selected root-to-leaf path and the edge used to enter each child. Keeping the edge indices
+/// alongside the nodes makes reservation release and backup O(path depth), rather than scanning
+/// every parent's edge array to rediscover the child.
+private struct SearchPath {
+    var nodes: [SearchNode]
+    var edgeIndices: [Int]
 }
 
 public actor Search {
@@ -131,10 +140,10 @@ public actor Search {
     public func makeMove(_ move: MoveCoord) throws {
         let next = root.state.copy()
         guard next.isLegal(next.toMove, move) else { throw SearchError(message: "illegal move \(move)") }
-        try next.play(next.toMove, move)
+        try next.play(next.toMove, move, assumeLegal: true)
         generation += 1
         if settings.treeReuse, let edge = root.edges.first(where: { $0.move == move }), let child = edge.child,
-           child.state.snapshot().fingerprint == next.snapshot().fingerprint {
+           (child.stateFingerprint ?? child.state.fingerprintValue()) == next.fingerprintValue() {
             root = child
             nodeCount = countNodes(root)
             return
@@ -177,7 +186,7 @@ public actor Search {
         let gen = generation
         if root.terminal != nil { return try result(chosen: .pass) }
         if !root.evaluated {
-            try await evaluateBatch([[root]], generation: gen)
+            try await evaluateBatch([SearchPath(nodes: [root], edgeIndices: [])], generation: gen)
             guard gen == generation else { throw SearchError(message: "search invalidated") }
         }
         while root.visits < target, !Task.isCancelled {
@@ -242,20 +251,20 @@ public actor Search {
         return out
     }
 
-    private func collectBatch(limit: Int) -> [[SearchNode]] {
-        var paths: [[SearchNode]] = []
+    private func collectBatch(limit: Int) -> [SearchPath] {
+        var paths: [SearchPath] = []
         while paths.count < limit {
             guard let path = descend() else { break }
             paths.append(path)
-            if let last = path.last, last.terminal != nil { continue }
+            if path.nodes.last?.terminal != nil { continue }
         }
         return paths
     }
 
     /// Selects a path from the root; reserves every traversed edge. Expands one new node or
     /// stops at a terminal. Returns nil when the node budget is exhausted.
-    private func descend() -> [SearchNode]? {
-        var path = [root]
+    private func descend() -> SearchPath? {
+        var path = SearchPath(nodes: [root], edgeIndices: [])
         var node = root
         while true {
             if node.terminal != nil { return path }
@@ -264,21 +273,22 @@ public actor Search {
             node.edges[idx].reservations += 1
             if let child = node.edges[idx].child {
                 node = child
-                path.append(child)
+                path.edgeIndices.append(idx)
+                path.nodes.append(child)
                 continue
             }
             guard nodeCount < settings.maxNodes else {
                 node.edges[idx].reservations -= 1
-                for (i, n) in path.enumerated().dropLast() { _ = i; _ = n }
                 releasePath(path)
                 return nil
             }
             let s = node.state.copy()
-            try! s.play(s.toMove, node.edges[idx].move)  // moves come from the legal mask
+            try! s.play(s.toMove, node.edges[idx].move, assumeLegal: true)  // moves come from the legal mask
             let child = SearchNode(state: s)
             node.edges[idx].child = child
             nodeCount += 1
-            path.append(child)
+            path.edgeIndices.append(idx)
+            path.nodes.append(child)
             return path
         }
     }
@@ -310,23 +320,23 @@ public actor Search {
         return bestIdx >= 0 ? bestIdx : nil
     }
 
-    private func releasePath(_ path: [SearchNode]) {
-        for (parent, child) in zip(path, path.dropFirst()) {
-            if let i = parent.edges.firstIndex(where: { $0.child === child }) { parent.edges[i].reservations -= 1 }
+    private func releasePath(_ path: SearchPath) {
+        for (i, parent) in path.nodes.dropLast().enumerated() {
+            parent.edges[path.edgeIndices[i]].reservations -= 1
         }
     }
 
-    private func releaseAll(_ batch: [[SearchNode]]) {
+    private func releaseAll(_ batch: [SearchPath]) {
         for p in batch { releasePath(p) }
     }
 
     /// Evaluates and backs up one leaf batch, tagged with the `generation` captured by the caller
     /// when it issued this request. See `run(visits:deadline:)` for why: the `await` below is a
     /// reentrancy point on this actor, so `generation` may have moved by the time it returns.
-    private func evaluateBatch(_ batch: [[SearchNode]], generation gen: Int) async throws {
-        let need = batch.filter { $0.last!.terminal == nil && !$0.last!.evaluated }
+    private func evaluateBatch(_ batch: [SearchPath], generation gen: Int) async throws {
+        let need = batch.filter { $0.nodes.last!.terminal == nil && !$0.nodes.last!.evaluated }
         if !need.isEmpty {
-            let snaps = need.map { $0.last!.state.snapshot() }
+            let snaps = need.map { $0.nodes.last!.state.snapshot() }
             let evals = try await evaluator.evaluate(snaps)
             guard gen == generation else {
                 // Late result from a previous generation (`makeMove`/`reset` ran while this
@@ -338,12 +348,12 @@ public actor Search {
             }
             guard evals.count == need.count else { throw SearchError(message: "evaluator returned \(evals.count) results for \(need.count) leaves") }
             for (path, (snap, e)) in zip(need, zip(snaps, evals)) {
-                let leaf = path.last!
+                let leaf = path.nodes.last!
                 if !leaf.evaluated { expand(leaf, snapshot: snap, evaluation: e) }
             }
         }
         for path in batch {
-            let leaf = path.last!
+            let leaf = path.nodes.last!
             let (v, s): (Double, Double) = leaf.terminal.map { (Double($0.value), Double($0.score)) } ?? (leaf.nnWhiteValue, leaf.nnWhiteScore)
             backup(path, whiteValue: v, whiteScore: s)
         }
@@ -356,6 +366,7 @@ public actor Search {
         node.nnWhiteScore = Double(w.whiteScoreMean)
         node.rawExpected = Double(e.expectedResult)
         node.rawWDL = e.winDrawLoss
+        node.stateFingerprint = snapshot.fingerprint
         let S = snapshot.boardSize
         var edges: [SearchNode.Edge] = []
         for i in 0 ... (S * S) where snapshot.legal[i] == 1 {
@@ -364,17 +375,16 @@ public actor Search {
         node.edges = edges  // ascending policy index → deterministic tie-break
     }
 
-    private func backup(_ path: [SearchNode], whiteValue: Double, whiteScore: Double) {
-        for node in path {
+    private func backup(_ path: SearchPath, whiteValue: Double, whiteScore: Double) {
+        for node in path.nodes {
             node.visits += 1
             node.whiteValueSum += whiteValue
             node.whiteScoreSum += whiteScore
         }
-        for (parent, child) in zip(path, path.dropFirst()) {
-            if let i = parent.edges.firstIndex(where: { $0.child === child }) {
-                parent.edges[i].visits += 1
-                parent.edges[i].reservations -= 1
-            }
+        for (i, parent) in path.nodes.dropLast().enumerated() {
+            let edge = path.edgeIndices[i]
+            parent.edges[edge].visits += 1
+            parent.edges[edge].reservations -= 1
         }
     }
 

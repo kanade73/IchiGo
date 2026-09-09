@@ -1,0 +1,11 @@
+{
+  "batches" : {
+    "1" : "cpu",
+    "8" : "metal",
+    "32" : "metal"
+  },
+  "format" : "ichigo.backend-profile",
+  "hardware" : "Apple M5",
+  "modelHash" : "4ae741596f71cc743563404a189d58c0ffbcb0e387b615362f45534197f77d1b",
+  "version" : 1
+}

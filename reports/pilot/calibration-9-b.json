@@ -1,0 +1,67 @@
+{
+  "checkpoint": "checkpoint-best-hard.pt",
+  "checkpointStep": 2000,
+  "dataDir": "../data/dataset-9-b-cal",
+  "datasetHash": "d00a51658e443871ce2ec512c7c4be98f22adcea22cbfa2f0b3b1083c60fbf13",
+  "fittedTemperature": 0.8242132065379644,
+  "objective": "expected-score BCE / NLL of e=win+0.5*draw against outcome o (win 1 / draw .5 / loss 0)",
+  "resultsCounts": {
+    "byKind": {
+      "resign": 1575,
+      "score": 624
+    },
+    "byResult": {
+      "B": 1094,
+      "W": 1105
+    },
+    "games": 2199
+  },
+  "resultsFile": "results-9.jsonl",
+  "schemaVersion": 1,
+  "scope": "raw root NN calibration only: e = softmax(forward_hard(spatial,global).wdl_logits / T). No search runs in this command; search-derived winrates are a separate metric and are not calibrated by this report (docs/spec/05-validation.md \u00a75).",
+  "temperatureRange": [
+    0.25,
+    4.0
+  ],
+  "test": {
+    "T1": {
+      "brier": 0.2550983462671223,
+      "brierGameBootstrapCI": {
+        "ci": 0.95,
+        "high": 0.26843848314018526,
+        "low": 0.24228031791676646,
+        "mean": 0.25543163504655286,
+        "n": 12,
+        "resamples": 10000,
+        "seed": 20260908
+      },
+      "ece": 0.039452433456280536,
+      "temperature": 1.0
+    },
+    "fitted": {
+      "brier": 0.25426492235489057,
+      "brierGameBootstrapCI": {
+        "ci": 0.95,
+        "high": 0.26665681677163183,
+        "low": 0.24194368095231028,
+        "mean": 0.25440106175013616,
+        "n": 12,
+        "resamples": 10000,
+        "seed": 20260908
+      },
+      "ece": 0.03248787856516645,
+      "temperature": 0.8242132065379644
+    },
+    "games": 12,
+    "insufficientSamples": true,
+    "minCompleteGames": 100,
+    "positions": 447
+  },
+  "validation": {
+    "fittedTemperature": 0.8242132065379644,
+    "games": 8,
+    "nll": 0.6836483737087734,
+    "positions": 359
+  },
+  "verified": true
+}

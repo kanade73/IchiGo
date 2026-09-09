@@ -92,8 +92,10 @@ public struct GameRecord: Sendable, Equatable {
     }
 }
 
-/// Owns a Core `Board`/`BoardHistory` and records every stone layout so 7 moves of history
-/// are always available (Core keeps only 6 recent boards).
+/// Owns a Core `Board`/`BoardHistory` and records the layouts needed by the feature encoder.
+/// Core keeps six recent boards, while the encoder needs at most the current board plus seven
+/// previous boards. The complete positional history is represented separately by
+/// `historyDigest`, so copying a state never grows an unbounded layout array.
 public final class GameState {
     public let boardSize: Int
     public private(set) var komi: Float
@@ -104,6 +106,8 @@ public final class GameState {
     public let initialStones: [(player: Player, x: Int, y: Int)]
     public let initialPlayer: Player
     private var layouts: [StoneLayout] = []
+    private var historyDigest: Hash128
+    private var cachedFingerprint: String?
 
     public init(boardSize: Int, komi: Float, initialStones: [(player: Player, x: Int, y: Int)] = [], initialPlayer: Player = .black) throws {
         guard boardSize == 9 || boardSize == 19 else { throw GameStateError.unsupportedBoardSize(boardSize) }
@@ -123,6 +127,8 @@ public final class GameState {
         }
         history = BoardHistory(board, pla: initialPlayer, rules: rules)
         layouts = [Self.layout(of: board, size: boardSize)]
+        historyDigest = Self.initialHistoryDigest(boardHash: board.posHash, initialPlayer: initialPlayer)
+        cachedFingerprint = nil
     }
 
     public var toMove: Player { history.presumedNextMovePla }
@@ -137,7 +143,9 @@ public final class GameState {
                    initialPlayer: initialPlayer, moves: moves.map { .init(player: $0.player, move: $0.move) })
     }
 
-    /// Deep copy (board, history, move list, layouts). Used by search to expand child positions.
+    /// Deep copy (board, history, move list, and the bounded feature history). Used by search to
+    /// expand child positions. The Core objects remain exact copies; only feature layouts are
+    /// intentionally bounded because the encoder never consumes older entries.
     public func copy() -> GameState {
         let c = GameState(copying: self)
         return c
@@ -153,6 +161,8 @@ public final class GameState {
         initialStones = o.initialStones
         initialPlayer = o.initialPlayer
         layouts = o.layouts
+        historyDigest = o.historyDigest
+        cachedFingerprint = o.cachedFingerprint
     }
 
     /// Exact outcome of a finished game (white perspective): +1 white win, -1 black win, 0 draw,
@@ -188,17 +198,27 @@ public final class GameState {
 
     /// Plays a move after full legality check (suicide, simple ko, positional superko, turn order).
     public func play(_ player: Player, _ move: MoveCoord) throws {
+        try play(player, move, assumeLegal: false)
+    }
+
+    /// Search-only fast path for a move that was already accepted by this state's legal mask (or
+    /// explicitly checked by the caller). Core still performs its own internal consistency check;
+    /// this only avoids repeating the wrapper-level legality query.
+    public func play(_ player: Player, _ move: MoveCoord, assumeLegal: Bool) throws {
         guard player == toMove else { throw GameStateError.wrongPlayer(expected: toMove, got: player) }
         guard isOnBoard(move) else {
             throw GameStateError.illegalMove(player: player, move: move, reason: "off-board")
         }
         let loc = Coordinates.loc(move, size: boardSize)
-        guard history.isLegal(board, loc, player) else {
+        if !assumeLegal, !history.isLegal(board, loc, player) {
             throw GameStateError.illegalMove(player: player, move: move, reason: "rejected by rules (occupied, suicide, ko or superko)")
         }
         history.makeBoardMoveAssumeLegal(board, loc, player)
         moves.append((player, move))
         layouts.append(Self.layout(of: board, size: boardSize))
+        if layouts.count > 8 { layouts.removeFirst(layouts.count - 8) }
+        historyDigest = Self.nextHistoryDigest(historyDigest, boardHash: board.posHash, player: player, move: move)
+        cachedFingerprint = nil
     }
 
     /// Replays from the initial position without the last move (restores history, ko, pass state).
@@ -210,6 +230,8 @@ public final class GameState {
         history = BoardHistory(board, pla: initialPlayer, rules: rules)
         moves = []
         layouts = [Self.layout(of: board, size: boardSize)]
+        historyDigest = Self.initialHistoryDigest(boardHash: board.posHash, initialPlayer: initialPlayer)
+        cachedFingerprint = nil
         for m in kept { try play(m.player, m.move) }
     }
 
@@ -217,6 +239,30 @@ public final class GameState {
         rules = try IchiGoRules.make(komi: newKomi)
         komi = newKomi
         history.setKomi(newKomi)
+        cachedFingerprint = nil
+    }
+
+    /// Fingerprint of the complete rules state without constructing encoder features. This is
+    /// useful for tree-reuse validation, where legality and liberties have already been checked by
+    /// `play` and would otherwise be recomputed solely to compare fingerprints.
+    public func fingerprintValue() -> String {
+        if let cachedFingerprint { return cachedFingerprint }
+        let S = boardSize
+        let pla = toMove
+        let ko: Int? = board.koLoc == Board.nullLoc ? nil : Location.getY(board.koLoc, S) * S + Location.getX(board.koLoc, S)
+        var consecutivePasses = 0
+        for m in moves.reversed() {
+            if m.move.isPass { consecutivePasses += 1 } else { break }
+        }
+        let recent = moves.suffix(2).reversed().map(\.move)
+        var banned: [Int] = []
+        for i in 0 ..< (S * S) where history.superKoBanned[Location.getLoc(i % S, i / S, S)] { banned.append(i) }
+        let value = Self.fingerprint(
+            historyDigest: historyDigest, toMove: pla, komi: komi, ko: ko, banned: banned,
+            consecutivePasses: consecutivePasses, moveNumber: moves.count, recentMoves: Array(recent)
+        )
+        cachedFingerprint = value
+        return value
     }
 
     public func snapshot() -> PositionSnapshot {
@@ -240,34 +286,25 @@ public final class GameState {
             if m.move.isPass { consecutivePasses += 1 } else { break }
         }
         let recent = moves.suffix(2).reversed().map(\.move)
-        let hist = Array(layouts.reversed().prefix(8))
-        var banned: [Int] = []
-        for i in 0 ..< (S * S) where history.superKoBanned[Location.getLoc(i % S, i / S, S)] { banned.append(i) }
-        let fp = Self.fingerprint(
-            layouts: layouts, toMove: pla, komi: komi, ko: ko, banned: banned,
-            consecutivePasses: consecutivePasses, moveNumber: moves.count, recentMoves: Array(recent)
-        )
+        let hist = Array(layouts.reversed())
         return PositionSnapshot(
             boardSize: S, toMove: pla, komi: komi, moveNumber: moves.count, consecutivePasses: consecutivePasses,
             layouts: hist, recentMoves: Array(recent), liberties: libs, koPoint: ko, legal: legal,
-            isGameFinished: history.isGameFinished, fingerprint: fp
+            isGameFinished: history.isGameFinished, fingerprint: fingerprintValue()
         )
     }
 
-    /// SHA-256 (hex) over everything the encoder and the rules depend on: the current layout, every
-    /// previous layout (which is exactly the positional-superko history), to-move, komi, simple-ko
-    /// point, superko bans, pass state, move number and the recent moves. Two states with different
-    /// encoded features therefore always get different fingerprints.
+    /// SHA-256 (hex) over everything the encoder and the rules depend on: an incremental commitment
+    /// to the complete sequence of layouts/moves (which is the positional-superko history),
+    /// to-move, komi, simple-ko point, superko bans, pass state, move number and recent moves. The
+    /// commitment makes the full history cheap to copy while retaining its role in tree reuse.
     static func fingerprint(
-        layouts: [StoneLayout], toMove: Player, komi: Float, ko: Int?, banned: [Int],
+        historyDigest: Hash128, toMove: Player, komi: Float, ko: Int?, banned: [Int],
         consecutivePasses: Int, moveNumber: Int, recentMoves: [MoveCoord]
     ) -> String {
         var data = Data()
         data.append(contentsOf: Array("ichigo-fp-v1|".utf8))
-        for layout in layouts {  // oldest first, last entry is the current board
-            data.append(contentsOf: layout)
-            data.append(0xFF)
-        }
+        data.append(contentsOf: Array("history=\(historyDigest)|".utf8))
         let moveText = recentMoves.map { m -> String in
             if case let .point(x, y) = m { return "\(x),\(y)" } else { return "pass" }
         }.joined(separator: ";")
@@ -275,5 +312,39 @@ public final class GameState {
             + "|passes=\(consecutivePasses)|n=\(moveNumber)|recent=\(moveText)"
         data.append(contentsOf: Array(text.utf8))
         return SHA256Hex.digest(data)
+    }
+
+    private static func initialHistoryDigest(boardHash: Hash128, initialPlayer: Player) -> Hash128 {
+        let player = UInt64(initialPlayer.rawValue)
+        return Hash128(
+            mix(boardHash.hash0 ^ player ^ 0x8f3f_73b5_cf1c_9ade),
+            mix(boardHash.hash1 ^ player ^ 0x2f6e_2b1d_7c4a_9b83)
+        )
+    }
+
+    private static func nextHistoryDigest(
+        _ previous: Hash128, boardHash: Hash128, player: Player, move: MoveCoord
+    ) -> Hash128 {
+        let moveKey: UInt64
+        switch move {
+        case .pass:
+            moveKey = UInt64.max
+        case let .point(x, y):
+            moveKey = (UInt64(x) << 32) | UInt64(y)
+        }
+        let playerKey = UInt64(player.rawValue) &* 0x9e37_79b9_7f4a_7c15
+        return Hash128(
+            mix(previous.hash0 &+ boardHash.hash0 &+ moveKey ^ playerKey ^ previous.hash1),
+            mix(previous.hash1 &+ boardHash.hash1 &+ (moveKey ^ 0xa5a5_a5a5_a5a5_a5a5) ^ playerKey ^ previous.hash0)
+        )
+    }
+
+    @inline(__always) private static func mix(_ input: UInt64) -> UInt64 {
+        var value = input
+        value ^= value >> 30
+        value &*= 0xbf58_476d_1ce4_e5b9
+        value ^= value >> 27
+        value &*= 0x94d0_49bb_1331_11eb
+        return value ^ (value >> 31)
     }
 }

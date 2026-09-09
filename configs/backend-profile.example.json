@@ -1,0 +1,12 @@
+{
+  "format": "ichigo.backend-profile",
+  "version": 1,
+  "_comment": "docs/spec/04-tasks.md T25 'batch別backend選択ファイル生成'. `ichigo benchmark --out FILE.json` writes one of these next to FILE.json as FILE.backend-profile.json, picking the fastest measured backend per batch size (docs/spec/01-network.md §5: 'CPU、Metal-byte、Metal-packed を B=1,2,4,8,16,32,64 で測定し、auto の閾値を端末別プロファイルに保存'). It records only the already-decided winner per batch, not the raw measurements -- see the sibling FILE.json/FILE.csv for those. `LogicMetal.BackendSelector.select(batch:profile:metalAvailable:)` consumes exactly this shape: with no profile file (or no entry for the requested batch) it falls back to 'auto' (metal if available, else cpu), matching `ichigo eval/gtp --backend auto`.",
+  "modelHash": "example-only-not-a-real-model-hash",
+  "hardware": "Apple M5",
+  "batches": {
+    "1": "cpu",
+    "8": "metal",
+    "32": "metal"
+  }
+}

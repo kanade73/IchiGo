@@ -40,6 +40,24 @@ actor FakeEvaluator: PositionEvaluating {
 }
 
 final class SearchTests: XCTestCase {
+    /// Opt-in performance smoke test for comparing tree overhead across board sizes. Run with
+    /// `ICHIGO_RUN_BENCHMARK=1 swift test --filter testSearchMicroBenchmarkVisitsPerSecond`.
+    func testSearchMicroBenchmarkVisitsPerSecond() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ICHIGO_RUN_BENCHMARK"] == "1")
+        for size in [9, 19] {
+            let ev = FakeEvaluator(sizes: [size], expected: 0.5)
+            var settings = SearchSettings()
+            settings.leafBatch = 8
+            let game = try GameState(boardSize: size, komi: size == 9 ? 7 : 7.5)
+            let search = try Search(evaluator: ev, modelHash: "benchmark", settings: settings, initial: game.record)
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = try await search.run(visits: 400)
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
+            print("SEARCH_BENCH size=\(size) visits=\(result.rootVisits) elapsed=\(String(format: "%.6f", elapsed)) visitsPerSecond=\(String(format: "%.1f", Double(result.rootVisits) / elapsed))")
+            XCTAssertEqual(result.rootVisits, 400)
+        }
+    }
+
     func testHandComputedSelectionAndBackup() async throws {
         // Root: black to move, NN expected 0.6 (black) => white value -0.2. Favoured moves 0 and 1 (prior 10/…).
         // With leafBatch 1 and 3 visits: root eval (1 visit), then two leaf expansions picked by PUCT.

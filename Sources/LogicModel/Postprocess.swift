@@ -22,7 +22,12 @@ public struct LogicEvaluation: Sendable, Equatable {
 
 public enum Postprocess {
     /// Stable masked softmax. Throws when a position has no legal move, or a value is non-finite.
-    public static func evaluate(raw: RawBatch, features: FeatureBatch) throws -> [LogicEvaluation] {
+    ///
+    /// `temperature` (docs/spec/03-engine.md §9, docs/spec/05-validation.md §5: 勝率校正) divides
+    /// the wdl logits before their softmax -- `q = softmax(wdlLogits / temperature)` -- so search
+    /// uses the same calibrated evaluation. The policy softmax is untouched. Default `1.0` is a
+    /// no-op; callers with a loaded model should pass `model.manifest.calibrationTemperature`.
+    public static func evaluate(raw: RawBatch, features: FeatureBatch, temperature: Float = 1.0) throws -> [LogicEvaluation] {
         guard raw.batch == features.batch, raw.boardSize == features.boardSize else {
             throw LogicModelError.invalidInput("raw/features batch or size mismatch")
         }
@@ -42,9 +47,9 @@ public enum Postprocess {
                 sum += e
             }
             for i in 0 ..< (P + 1) where policy[i] != 0 { policy[i] = Float(Double(policy[i]) / sum) }
-            let w = Array(raw.wdlLogits[(b * 3) ..< (b * 3 + 3)])
+            let w = raw.wdlLogits[(b * 3) ..< (b * 3 + 3)].map { Double($0) / Double(temperature) }
             let wm = w.max()!
-            let we = w.map { exp(Double($0 - wm)) }
+            let we = w.map { exp($0 - wm) }
             let ws = we.reduce(0, +)
             let wdl = we.map { Float($0 / ws) }
             let expected = wdl[0] + 0.5 * wdl[1]
