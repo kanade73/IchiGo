@@ -490,3 +490,7 @@ A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/
 - **small 局所 head v3（100k）: hard top1 0.366 / expected MAE 0.277**。同条件の head v2（gl10 局所 100k: 0.369 / 0.294）に対し value が明確に改善（初めて構造変更で value が動いた）。wide512 head v3 は 60k 時点で 0.355 / 0.292。
 - 16 層×512（200k）: 0.383 / 0.288 で完了。クラッシュなし。
 - head v3 の展開: gl0.3、base、3 倍データ、200k の各版を空き GPU で起動。small head v3 を export して対局で検証する。
+
+### 2026-09-10 09:30: head v3 の対局検証
+
+- `p7-small-headv3`（MAE 0.277）vs `p3-small-gl10-local`（head v2、MAE 0.294）、各 400 visits、固定開局 50 × 色交換: 44 勝 5 分 51 敗、平均 0.465、CI [0.37, 0.56]、事故 0。**value の MAE 改善 0.017 は対局では有意差にならない。** head v3 の wide512・base・3 倍データ・200k 版（phase 8）の結果で改めて判断する。
