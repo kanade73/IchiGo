@@ -516,3 +516,9 @@ A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/
 | rollout 4 本、W=0.7 | 11-1-88 | 0.115 | [0.06, 0.175] | 56 / 6,133 |
 
 等時間では visits が 100〜350 分の 1 になり大敗（事故 0）。固定 400 visits の比較は 1 局 15〜30 分かかるため 10 局に縮小して実行中。**policy 誘導プレイアウトは、この探索・推論速度では value の代替にならない**（プレイアウト自体の品質以前に計算コストで不成立）。機構（`--value-source rollout`）は残す。
+
+### 2026-09-10 17:00: head v3 の 200k 結果、LUT-4 起動
+
+- small 局所 head v3 200k: hard top1 0.367 / **expected MAE 0.267**（最良）。gateLR 0.3 版 0.370 / 0.275。head v3 は value に一貫して効く（v2 の 0.29 台 → 0.27 前後）。wide512 head v3 と 3 倍データ版は完了間近。
+- LUT-4（4 入力真理値表ゲート、`gateArity 4`、`lut4-msb-first`、gates.u16）を実装（Python 208、Swift 189、parity-cpu 通過、commit 済み）。C=256 / C=512 局所 head v3 を 100k step で起動（0.38 / 0.74 秒/step。soft 評価が 16 項の積和になるため遅い）。
+- rollout value の固定 visits 比較は 10 局に縮小して実行中。
