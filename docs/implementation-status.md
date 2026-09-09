@@ -404,3 +404,9 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 
 - `p4-local-gl30-200k` の uniform baseline 100 局: 100 勝 0 敗、CI [1.0, 1.0]、事故 0（PASS）。16 層局所 200k: hard top1 0.360 / MAE 0.289。
 - T26 検収: 1 GPU 100 step = 0.109 秒/step（1,179 samples/秒）。2 GPU torchrun 側は run-summary 未生成のため失敗を調査中。
+
+### 2026-09-09 21:00: T26 検収の障害と対処
+
+- 2 GPU の torchrun がコード外で停止: NCCL の P2P 経路がこのサーバー（GPU 間 PXB 接続）で hang する。2 rank の all_reduce 単体テストで `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1` のときだけ完了（0.2 秒）を確認。`Scripts/train_ddp.sh` に既定値として設定。
+- コード側は DDP wrap 前に全 rank のパラメータ署名を broadcast で照合する事前検査を追加（不一致は NCCL abort ではなく明示エラー）。gloo 2 process で Trainer 全経路（validation/checkpoint/throughputReference）を通すテストを追加、pytest 192 件。
+- 最初に見た「15 params vs 0 params」は NCCL 経路の停止に伴う検証 collective の不整合で、モデル構築の差ではない。

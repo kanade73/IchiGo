@@ -16,6 +16,10 @@
 # process (world_size=1, no process group); torchrun always sets them (even for N=1), so this
 # still exercises distributed.py's init path.
 set -euo pipefail
+# NCCL peer-to-peer hangs on the university server (PXB topology, verified 2026-09-09 with a 2-rank
+# all_reduce that only completes with P2P disabled). Override by exporting the variables yourself.
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 cd "$(dirname "$0")/.."
 UV=${UV:-uv}
 N=${1:-4}
