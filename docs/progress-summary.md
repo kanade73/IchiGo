@@ -58,6 +58,10 @@ value の切り分け（学習なし）: ownership 総和 → sigmoid で MAE 0.
 - small モデルでは DDP より 1 GPU × 多構成が効率的。DDP は大型・長時間ランに使う。
 - 教師は g170e-b20c256x2（KataGo 1.18.2、128 visits）で固定。CNN baseline は本番モデルにしない（Swift 推論経路がない）。
 
+### value 代替の対局検証（2026-09-10 06:00）
+
+`--value-source ownership`（Σownership+komi の sigmoid）は探索で明確に負け（対 network 0.215、CI [0.14, 0.29]）、50/50 混合でも 0.425（CI [0.34, 0.51]）。局面単位の MAE では同水準でも、探索の葉（対局途中の未整理な局面）では NN wdl head の方が一貫している。ownership 由来 value は不採用（インフラは残す）。head v3 の学習結果待ち。
+
 ## 6. 進行中（2026-09-10 早朝）
 
 - headVersion 3（3×3 領域プーリング）の実装 → phase 7 学習。
