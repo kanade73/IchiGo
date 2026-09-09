@@ -273,7 +273,7 @@ class LogicNet(nn.Module):
     def __getattr__(self, name):
         # The pre-LUT training/checkpoint surface reads model.theta. Keep that alias for arity 4
         # without registering the same Parameter twice in the state dict or optimizer.
-        if name == "theta":
+        if name == "theta" and self.__dict__.get("gate_arity") == 4:
             params = self.__dict__.get("_parameters", {})
             phi = params.get("phi")
             if phi is not None:
@@ -305,8 +305,8 @@ class LogicNet(nn.Module):
     # ----- gate layers -----
     def soft_layers(self, spatial: torch.Tensor, tau: float, frozen_prefix: int = 0,
                     gumbel_noise: torch.Tensor | None = None, tau_wire: float | None = None) -> list[torch.Tensor]:
-        """Returns all layer outputs (float). Layers < frozen_prefix use hard argmax gates on the
-        (already 0/1) activations; the rest use the softmax relaxation."""
+        """Returns all layer outputs (float). Layers < frozen_prefix use hard table lookups on the
+        (already 0/1) activations; the rest use the arity-specific soft relaxation."""
         size = spatial.shape[1]
         x = spatial.to(torch.float32)
         outs = []

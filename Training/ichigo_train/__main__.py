@@ -135,7 +135,12 @@ def cmd_inspect(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_CONFIG
     summary = {k: v for k, v in m.manifest.items() if k != "headTensors"}
-    summary["gateHistogram"] = {str(g): int(c) for g, c in enumerate(__import__("numpy").bincount(m.gates.reshape(-1), minlength=16))}
+    np = __import__("numpy")
+    if int(m.manifest.get("gateArity", 2)) == 4:
+        values, counts = np.unique(m.gates.reshape(-1), return_counts=True)
+        summary["gateHistogram"] = {str(int(g)): int(c) for g, c in zip(values, counts)}
+    else:
+        summary["gateHistogram"] = {str(g): int(c) for g, c in enumerate(np.bincount(m.gates.reshape(-1), minlength=16))}
     print(json.dumps(summary, indent=2))
     return EXIT_OK
 

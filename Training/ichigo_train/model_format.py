@@ -46,8 +46,8 @@ class ModelFormatError(ValueError):
 @dataclass
 class LoadedModel:
     manifest: dict
-    wiring: np.ndarray  # int32 [L,C,2,4]
-    gates: np.ndarray  # uint8 [L,C]
+    wiring: np.ndarray  # int32 [L,C,n,4]
+    gates: np.ndarray  # uint8 [L,C] for arity 2, uint16 [L,C] for LUT4
     heads: dict[str, np.ndarray]
 
 

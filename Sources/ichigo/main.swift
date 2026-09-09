@@ -88,8 +88,8 @@ commands:
 
 backends: cpu (byte gates + explicit-loop CPU heads, the golden oracle), cpu-packed (batch-packed
 CPU gates + accelerated CPU heads), metal (byte gates on GPU + accelerated CPU heads),
-metal-packed (batch-packed gates + heads, both on GPU). --backend auto picks metal if a Metal
-device is available, else cpu. --backend metal/metal-packed with no device is a usage error
+metal-packed (batch-packed gates + heads, both on GPU). --backend auto picks cpu-packed for LUT4
+models; otherwise it picks metal if a Metal device is available, else cpu. --backend metal/metal-packed with no device is a usage error
 (exit 2), never a silent fallback.
 
 value-source (docs/spec/03-engine.md §3-4): --value-source network (default) keeps the logic
@@ -109,8 +109,8 @@ alongside the search value regardless of this setting.
 
 /// cpu -> ScalarBackend, cpu-packed -> PackedCPUBackend, metal -> MetalBackend, metal-packed ->
 /// MetalPackedBackend (both Metal backends: usage error, exit 2, if no Metal device), auto ->
-/// metal if available else cpu (docs/spec/01-network.md §5: "Metal device がなければ...auto は
-/// CPU"). The backend is picked once per process/session; there is no per-request runtime
+/// cpu-packed for arity 4, otherwise metal if available else cpu (docs/spec/01-network.md §5:
+/// "Metal device がなければ...auto はCPU"). The backend is picked once per process/session; there is no per-request runtime
 /// fallback within one `gtp`/`selfplay` run.
 func makeBackend(_ name: String, model: LogicModelData) -> any LogicBackend {
     switch name {

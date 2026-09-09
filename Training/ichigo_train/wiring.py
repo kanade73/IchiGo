@@ -1,6 +1,6 @@
 """Fixed wiring generation and gate-logit initialisation (docs/spec/01-network.md §3, §2b).
 
-Wiring shape ``[L, C, 2, 4] int32`` with the last axis ``(bank, channel, dx, dy)``:
+Wiring shape ``[L, C, n, 4] int32`` with the last axis ``(bank, channel, dx, dy)``:
   bank 0 = previous layer (layer 0: the 32 input channels), bank 1 = the 32 input channels
   (only allowed from layer 1 on). Input point is ``(x+dx, y+dy)``; off-board reads 0.
 Layer ``l`` offsets are ``dx, dy ∈ {-d_l, 0, d_l}``.
