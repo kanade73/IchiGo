@@ -63,7 +63,7 @@ M0（数値基盤）・M1（学習して 9 路を動かす）・M2a（9 路 CGOS
 | `Scripts/release/build.sh models/p4-local-wide512-200k.ichigo` | `dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64/` を生成。Metal リソースがパッケージ済みレイアウトから解決することを自己検証済み（"OK -- metal backend resolved logic_byte.metal from the packaged dist/ layout"）。MANIFEST.json 11 ファイル、モデル payloadHash `b763668e199b87dea8a1d8c7373d091ac9551f972f26f9c8b8d43278083dde7d` |
 | `Scripts/release/verify.sh <dist-dir>` | MANIFEST 再ハッシュ・`ichigo doctor`・`ichigo inspect --model`（payloadHash 一致）・`--backend cpu-packed`/`--backend auto` それぞれの 3-move GTP smoke、全 PASS |
 | 2 局 hard-model smoke match（dist 内の release バイナリ、`--visits-a 50 --games 2`、uniform baseline 相手） | 2 勝 0 敗 0 分、meanScore 1.0、`incidents: {crashes:0, illegalMoves:0, timeouts:0, truncations:0}` |
-| 最終行 | `release-check: PASS (/Users/kanade/dev/univ/koubou/IchiGo/dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64)` |
+| 最終行 | `release-check: PASS (<repo>/dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64)` |
 
 **path 非依存性の追加確認**: 上記 dist ディレクトリをリポジトリ外（`/private/tmp/.../scratchpad/moved-dist-final`）へコピーし、リポジトリと無関係な cwd（`/private/tmp`）から `Scripts/release/verify.sh` を再実行して全チェック PASS を確認した（`--backend auto` の Metal 経路含む）。
 

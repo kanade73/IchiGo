@@ -5,10 +5,10 @@
   "engines": {
     "A": {
       "argv": [
-        "/Users/kanade/dev/univ/koubou/IchiGo/.build/release/ichigo",
+        "<repo>/.build/release/ichigo",
         "gtp",
         "--model-9",
-        "/Users/kanade/dev/univ/koubou/IchiGo/models/p4-local-wide512-200k.ichigo",
+        "<repo>/models/p4-local-wide512-200k.ichigo",
         "--backend",
         "auto",
         "--value-source",
@@ -24,10 +24,10 @@
     },
     "B": {
       "argv": [
-        "/Users/kanade/dev/univ/koubou/IchiGo/.build/release/ichigo",
+        "<repo>/.build/release/ichigo",
         "gtp",
         "--model-9",
-        "/Users/kanade/dev/univ/koubou/IchiGo/models/p4-local-wide512-200k.ichigo",
+        "<repo>/models/p4-local-wide512-200k.ichigo",
         "--backend",
         "auto"
       ],

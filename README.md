@@ -6,14 +6,17 @@ Apple Silicon Mac で推論・探索・GTP 対局を行い、学習は PyTorch�
 
 **入口: [仕様書と実装順序](docs/spec/00-overview.md)** / **進捗: [docs/implementation-status.md](docs/implementation-status.md)**
 
-## 現状（2026-09-08）
+## 現状（2026-09-10）
 
 | 段階 | 状態 |
 |---|---|
 | M0 数値基盤（16 ゲート、32ch 特徴、`.ichigo` 形式、CPU 推論の Python/Swift 一致） | 完了 |
-| M1 学習（SGF→特徴、KataGo 教師ラベル、shard、学習/再開/離散化、16 局面過学習検収） | 完了。9 路 96k 局面の本ラン実施中 |
-| エンジン（evaluator、pure-tree PUCT、GTP、自己対局） | 実装済み。時計制御・Metal 推論・CGOS 接続は未実装 |
-| 棋力 | 未評価。policy は学習しているが value head は設計変更（head v2）を検証中 |
+| M1 学習（SGF→特徴、KataGo 教師ラベル、shard、学習/再開/離散化、過学習検収、baseline 対局） | 完了 |
+| M2a 9 路 CGOS 準備（時計、Metal/packed 推論、DDP 1/2/4 GPU、校正、CGOS ローカル統合、release パッケージ） | 完了（`make release-check` PASS） |
+| M2b 公開 CGOS 出場 | 未着手（接続先・アカウント設定待ち） |
+| 棋力 | 合法手 uniform に 100 戦全勝。教師（KataGo）比では policy top1 約 0.39、value は改善中（`docs/progress-summary.md` §4） |
+
+進捗の総括は [docs/progress-summary.md](docs/progress-summary.md)、実験ログは [docs/implementation-status.md](docs/implementation-status.md)、運用手順は [docs/runbook.md](docs/runbook.md)。
 
 学習済みモデル・データ・run 成果物はリポジトリに含めていません（`.gitignore` 参照）。
 

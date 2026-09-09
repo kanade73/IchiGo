@@ -5,10 +5,10 @@
   "engines": {
     "A": {
       "argv": [
-        "/Users/kanade/dev/univ/koubou/IchiGo/dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64/ichigo",
+        "<repo>/dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64/ichigo",
         "gtp",
         "--model-9",
-        "/Users/kanade/dev/univ/koubou/IchiGo/dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64/models/p4-local-wide512-200k.ichigo",
+        "<repo>/dist/ichigo-0.1.0-a6c6b1ea7e27-dirty-arm64/models/p4-local-wide512-200k.ichigo",
         "--backend",
         "auto"
       ],
