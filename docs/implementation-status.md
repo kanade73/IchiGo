@@ -466,3 +466,16 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 
 - headVersion 3（z_xy の 3×3 領域平均 576 次元を global head へ、u_global = 2C+645）を仕様・Python・Swift（scalar/Accelerate/Metal）・fixture に追加。Swift 175 + Metal 30、pytest 201、parity-cpu/metal 通過。
 - phase 7 起動: wide512 局所 head v3（200k、GPU 6）、small 局所 head v3（100k、GPU 7）。追加ラベル 247,738 局面完了、3 倍データセット構築 → wide512 局所 200k（GPU 3）を自動起動予定。
+
+### 2026-09-10 06:00: `--value-source`（ownership 由来 value を探索に混合）実装と A/B 対局
+
+上記 03:30 の診断（学習なしの ownership 由来 value_own が NN wdl head 相当の expected MAE に達する）を受け、`IchiGoEngine.ValueSource`（`.network`/`.ownership(k,b)`/`.blend(weightNetwork,k,b)`）を実装した。`EvaluationAdapter.toWhite` が `score_est = Σ_xy ownership_xy + komiSelf` → `value_own = sigmoid((score_est+b)/k)` を計算し、`.ownership` は `expectedResult` をこれで置き換え、`.blend` は `weightNetwork*e_nn + (1-weightNetwork)*value_own` を使う。score lead（`whiteScoreMean`/`whiteLead`）は `.network` 以外なら常に ownership 由来の `score_est` を採用（blend の重みに関わらず）。raw NN WDL は `rawWinDrawLoss`/`rootRawExpected` に常に保持し、GTP ログは `rawNN=`（e_nn）・`expected(draw=0.5)=`（探索値）・`valueSource=` を出す。`Search`/`GTPEngine.Config`/CLI（`ichigo gtp`・`ichigo selfplay` 双方に `--value-source network|ownership|blend`、`--value-blend`既定0.5、`--value-k`/`--value-b`既定6/1.0）まで配線し、match runner の argv にはそのまま渡る（Python 変更なし）。`swift build`・`swift build -c release --product ichigo`・`swift test --filter 'IchiGoEngineTests|IchiGoGTPTests'`（EvaluationAdapter の視点/blend 境界の手計算、fake evaluator で wdl 一様・ownership 一方favourな局面が `.ownership` でだけ選ばれること、GTP フラグのparse/ログ echo を含め全通過）。
+
+A/B 対局（`p4-local-wide512-200k`、9 路 komi 7、各 400 visits、`configs/openings/random4-9x9-seed20260909.jsonl` 50 開局×色交換、seed 20260910、事故 0 で共通）:
+
+| 対戦 | 勝-分-敗（A視点） | 平均得点(A) | paired bootstrap 95% CI | Elo 差(A-B) |
+|---|---|---|---|---|
+| `--value-source ownership` (A) vs network既定 (B) | 20-3-77 | 0.215 | [0.14, 0.29] | -225 |
+| `--value-source blend --value-blend 0.5` (A) vs network既定 (B) | 41-3-56 | 0.425 | [0.34, 0.51] | -52.5 |
+
+結論: 03:30 の診断（孤立局面での expected MAE がNN head相当）はサーチ内での有用性を保証しなかった。ownership 単独は有意に弱い（CI が 0.5 を大きく下回る）。blend 0.5 も敗越しで、CI 上限が 0.51 と 0.5 をわずかに超えるため「有意に悪い」とは言えないが、優位でもない。実装（`--value-source`自体、視点変換、CLI配線、ログ）は事故ゼロで正しく動作しており、原因は value_own の質そのものと考えられる: (1) k=6,b=1 は完了局面寄りのvalidation集合で得点差にフィットした値で、探索が触れる序盤・中盤・末端未解決の局面では ownership 総和のスケールが安定せず sigmoid が過飽和しやすい、(2) headVersion 3（05:00、盤面局所情報を保った global head）の方が同じ情報をNN自身のwdl/score head経由で使わせる分、探索の勾配としては筋が良い可能性が高い。**当面の既定は `.network` のまま**。`--value-source`はheadVersion 3 再学習後の比較や、k/bを探索時局面分布で再フィットする追試のために実装として残す。
