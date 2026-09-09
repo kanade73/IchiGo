@@ -430,3 +430,10 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 
 - 開局なしの対局は決定的で 100 局中 2 種類の棋譜しか出ず（黒が全勝）、比較にならない。固定開局 `configs/openings/random4-9x9-seed20260909.jsonl`（ランダム 4 手 × 60、seed 固定）を作り、色交換ペアで使用する。
 - `p4-local-wide512-200k` vs `p2-small-gl10`（各 100 visits、9 路 komi 7、50 開局 × 色交換）: 63 勝 6 分 31 敗、平均得点 0.66、paired bootstrap 95% CI [0.57, 0.745]、全 100 局が相異なる棋譜、事故 0。wide512 の方が有意に強い（05 §6 の promotion 条件のうち CI 下限 > 0.5 を visits 固定リーグで満たす。1 秒/5 秒の時間リーグは未実施）。
+
+### 2026-09-10 01:00: T37（運用パッケージ、M2a 完了）
+
+- `Scripts/release/build.sh` / `verify.sh`、`make release-check`（check-cpu → Metal 前提確認 → check-metal → cgos tests → build/verify → uniform 2 局 smoke、事故 0 ゲート）を実装し、この Mac で PASS。dist は `.build` 外へ移しても Metal リソース解決を含め検証通過。
+- `docs/runbook.md`（構築、モデル準備、fake server 演習、実 CGOS 設定、ログ/rotation、旧モデル復帰、M2b 記録項目、トラブル対応）、`docs/release-report-template.md`。
+- 既知事項: 対局中のエンジンクラッシュは client 自体が終了する（無人運用には再起動 supervisor が必要）。cgos の SIGTERM テストは高負荷時に 180 秒 timeout で不安定。
+- **M2a のゲート（T22〜T26、T28〜T30）は完了。M2b は公開 CGOS のアカウント・接続先設定待ち。**
