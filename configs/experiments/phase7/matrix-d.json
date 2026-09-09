@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p10-c2048-headv3-x3data-200k",
+      "gpu": 3,
+      "config": "configs/experiments/phase7/p10-c2048-headv3-x3data-200k.json",
+      "out": "runs/p10-c2048-headv3-x3data-200k"
+    },
+    {
+      "runId": "p10-c1024-headv3-x3data-200k",
+      "gpu": 6,
+      "config": "configs/experiments/phase7/p10-c1024-headv3-x3data-200k.json",
+      "out": "runs/p10-c1024-headv3-x3data-200k"
+    }
+  ]
+}
