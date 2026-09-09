@@ -461,3 +461,8 @@ CPU fallback（Metal未実装のためGPU中断不能ケースの実機検証）
 | 線形プローブ: ownership 地図（81） | 0.371 | |
 
 判断: 情報は局所 head まで来ており、盤全体の平均/最大で捨てている。→ (1) headVersion 3（3×3 領域プーリングを global head へ）、(2) ownership 由来 value を探索に混合する `--value-source`（学習不要、A/B 対局で検証）を並行実装。PUCT が要求するのは白視点の一貫した期待得点だけなので、NN の wdl head に限定せず比較する。
+
+### 2026-09-10 05:00: headVersion 3 と phase 7
+
+- headVersion 3（z_xy の 3×3 領域平均 576 次元を global head へ、u_global = 2C+645）を仕様・Python・Swift（scalar/Accelerate/Metal）・fixture に追加。Swift 175 + Metal 30、pytest 201、parity-cpu/metal 通過。
+- phase 7 起動: wide512 局所 head v3（200k、GPU 6）、small 局所 head v3（100k、GPU 7）。追加ラベル 247,738 局面完了、3 倍データセット構築 → wide512 局所 200k（GPU 3）を自動起動予定。
