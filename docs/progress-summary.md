@@ -8,7 +8,7 @@
 
 - 公開 CGOS（yss-aya.com:6809、5 分切れ負け、komi 7）に `RinGo-LGN` で出場した（2 局、相手は 2,900 前後の KataGo 系で 2 敗）。client・release パッケージ・supervisor（`runs/cgos/<name>/run.sh`、gitignore）・投了（`--resign-threshold`）まで実運用で通っている。
 - 外部基準: gnugo 3.8 level 10（`--capture-all-dead`）と 800 visits で 10-0-10。CGOS の Gnugo アンカーは 1800 なので、その近辺。
-- 対局用の推奨設定: `ichigo gtp --model-9 <model> --backend cpu-packed-mt --leaf-batch 64 --pipeline --resign-threshold 0.03`（GPU を使わない。理由は下の「読みの量より知識」）。モデルは死活ベンチ最良の `p11-wide512-headv3-x3data-dagger-v2-200k`（featureVersion 2）が候補だが、チャンピオン `p4-local-wide512-200k` との対局検証はまだ。
+- 対局用の推奨設定: `ichigo gtp --model-9 <model> --backend cpu-packed-mt --leaf-batch 64 --pipeline --resign-threshold 0.03`（GPU を使わない。理由は下の「読みの量より知識」）。モデルは死活ベンチ最良の `p11-wide512-headv3-x3data-dagger-v2-200k`（featureVersion 2）。チャンピオン `p4-local-wide512-200k` に持ち時間をそろえて 23-3-14（0.61、CI [0.46, 0.75]）で、しかも v2 特徴の計算が 1 スレッドで遅く読みは 6 分の 1 だった（高速化が次の課題）。
 
 ### 強さ（品質）について分かったこと
 
