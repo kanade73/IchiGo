@@ -8,7 +8,8 @@ import LogicModel
 /// per-size evaluators and the search. `handle(line:)` returns the full GTP response text
 /// (including the trailing blank line); all diagnostics go to `log` (stderr), never stdout.
 ///
-/// v1 limits: resign off, kata-genmove_analyze reports the root summary with the best candidate's
+/// Resignation is off unless `Config.resignThreshold` is set (see there). kata-genmove_analyze
+/// reports the root summary with the best candidate's
 /// PV (child scores are root summaries — docs/spec/03-engine.md §9). Clock control (docs/spec/
 /// 03-engine.md §8): `time_settings` accepts sudden death only (byo-yomi is rejected outright);
 /// with no `time_settings` at all, genmove keeps the fixed `Config.visits` cap and no deadline.
@@ -20,6 +21,16 @@ public actor GTPEngine {
         public var visits: Int = 100
         public var searchSettings = SearchSettings()
         public var defaultBoardSize: Int = 9
+        /// Resignation (docs/spec/03-engine.md §7). nil (the default) never resigns. When set,
+        /// genmove answers `resign` once the search's expected result for the side to move
+        /// (draw = 0.5) has been below this threshold on `resignConsecutiveMoves` of that side's
+        /// own genmoves in a row. Only genmoves at or after `resignMinMoveNumber` (nil: a quarter
+        /// of the board area, i.e. 20 on 9x9) whose search reached `resignMinVisits` root visits
+        /// count; a deadline-watchdog fallback never does and breaks the streak.
+        public var resignThreshold: Double? = nil
+        public var resignConsecutiveMoves: Int = 3
+        public var resignMinMoveNumber: Int? = nil
+        public var resignMinVisits: Int = 50
         public init() {}
     }
 
@@ -47,6 +58,8 @@ public actor GTPEngine {
     private var search: Search?
     private var timeLeft: [Player: Double] = [:]
     private var mainTime: Double?
+    /// Consecutive own genmoves per colour whose search value was below `resignThreshold`.
+    private var lowValueStreak: [Player: Int] = [:]
     public private(set) var quitRequested = false
 
     public init(models: [Int: ModelSlot], config: Config = Config(), clock: any MonotonicClock = SystemMonotonicClock(), log: @escaping @Sendable (String) -> Void) throws {
@@ -121,14 +134,14 @@ public actor GTPEngine {
             let newKomi = komi
             let newGame = try GameState(boardSize: s, komi: newKomi)
             try await slot.evaluator.preWarm(size: s)
-            boardSize = s; game = newGame; search = nil
+            boardSize = s; game = newGame; search = nil; lowValueStreak = [:]
             return ""
         case "clear_board":
-            game = try GameState(boardSize: boardSize, komi: komi); search = nil; return ""
+            game = try GameState(boardSize: boardSize, komi: komi); search = nil; lowValueStreak = [:]; return ""
         case "komi":
             guard let k = p.args.first.flatMap(Float.init), k.isFinite else { throw GTPError(message: "komi not a number") }
             guard IchiGoRules.komiRange.contains(k), Rules.komiIsIntOrHalfInt(k) else { throw GTPError(message: "komi must be an integer or half-integer in [-150,150]") }
-            try game.setKomi(k); komi = k; search = nil; return ""
+            try game.setKomi(k); komi = k; search = nil; lowValueStreak = [:]; return ""
         case "play":
             guard p.args.count >= 2, let player = Self.color(p.args[0]) else { throw GTPError(message: "invalid color or coordinate") }
             let move: MoveCoord
@@ -140,15 +153,15 @@ public actor GTPEngine {
             return ""
         case "genmove":
             guard let player = p.args.first.flatMap(Self.color) else { throw GTPError(message: "invalid color") }
-            let (move, _) = try await generateMove(for: player)
-            return Coordinates.gtpString(move, size: boardSize)
+            let (move, _, resign) = try await generateMove(for: player)
+            return resign ? "resign" : Coordinates.gtpString(move, size: boardSize)
         case "kata-genmove_analyze":
             guard let player = p.args.first.flatMap(Self.color) else { throw GTPError(message: "invalid color") }
-            let (move, result) = try await generateMove(for: player)
-            return Self.analysisPayload(result, move: move, size: boardSize)
+            let (move, result, resign) = try await generateMove(for: player)
+            return Self.analysisPayload(result, move: resign ? "resign" : Coordinates.gtpString(move, size: boardSize), size: boardSize)
         case "undo":
             guard game.moveNumber > 0 else { throw GTPError(message: "cannot undo") }
-            try game.undo(); search = nil; return ""
+            try game.undo(); search = nil; lowValueStreak = [:]; return ""
         case "showboard": return "\n" + game.board.printBoard()
         case "final_score":
             let g = game.copy()
@@ -174,12 +187,16 @@ public actor GTPEngine {
     /// exactly one move is committed to the search tree even if the deadline races the search's own
     /// completion. With no `time_settings`, the search runs to the fixed `config.visits` with no
     /// deadline (unchanged v1 default behaviour).
-    private func generateMove(for player: Player) async throws -> (MoveCoord, SearchResult?) {
+    ///
+    /// Returns `resign == true` when the resignation rule (`Config.resignThreshold`) fires; the
+    /// searched move is then *not* played on `game`, and the search tree (which already committed
+    /// it) is dropped, so the engine's position is unchanged if the controller carries on anyway.
+    private func generateMove(for player: Player) async throws -> (move: MoveCoord, result: SearchResult?, resign: Bool) {
         guard let slot = models[boardSize] else { throw GTPError(message: "no model for size \(boardSize)") }
         guard player == game.toMove else { throw GTPError(message: "it is \(game.toMove == .black ? "black" : "white")'s turn") }
         if game.history.isGameFinished {
             log("genmove after game end: passing without state change")
-            return (.pass, nil)
+            return (.pass, nil, false)
         }
         if search == nil {
             search = try Search(evaluator: slot.evaluator, modelHash: slot.modelHash, settings: config.searchSettings, initial: game.record, clock: clock)
@@ -207,7 +224,12 @@ public actor GTPEngine {
 
         let outcome = try await DeadlineController.run(search: s, visits: visitsTarget, deadline: deadline, clock: clock)
         guard game.isLegal(player, outcome.move) else { throw GTPError(message: "search produced an illegal move \(outcome.move)") }
-        try game.play(player, outcome.move)
+        let resign = updateResignStreak(player: player, moveNumber: game.moveNumber + 1, result: outcome.result)
+        if resign {
+            search = nil
+        } else {
+            try game.play(player, outcome.move)
+        }
 
         if let remaining {
             let elapsed = await clock.now() - start
@@ -230,16 +252,34 @@ public actor GTPEngine {
             let rollout = await s.rolloutDiagnostics()
             log("genmove rollout: leaves=\(rollout.leaves) avgPlayoutsPerLeaf=\(String(format: "%.2f", rollout.averagePlayoutsPerLeaf)) maxMovesHitFraction=\(String(format: "%.3f", rollout.maxMovesHitFraction)) (\(rollout.maxMovesHit)/\(rollout.playouts))")
         }
-        return (outcome.move, outcome.result)
+        return (outcome.move, outcome.result, resign)
     }
 
-    static func analysisPayload(_ r: SearchResult?, move: MoveCoord, size: Int) -> String {
+    /// Advances `player`'s low-value streak for this genmove (1-based `moveNumber` of the move
+    /// being chosen) and reports whether it has reached `Config.resignConsecutiveMoves`.
+    private func updateResignStreak(player: Player, moveNumber: Int, result: SearchResult?) -> Bool {
+        guard let threshold = config.resignThreshold else { return false }
+        let minMove = config.resignMinMoveNumber ?? (boardSize * boardSize / 4)
+        guard let result, moveNumber >= minMove, result.rootVisits >= config.resignMinVisits, result.searchExpected < threshold else {
+            lowValueStreak[player] = 0
+            return false
+        }
+        let streak = (lowValueStreak[player] ?? 0) + 1
+        lowValueStreak[player] = streak
+        guard streak >= config.resignConsecutiveMoves else { return false }
+        log("genmove resign: expected(draw=0.5)=\(String(format: "%.3f", result.searchExpected)) < \(threshold) on \(streak) consecutive own moves (move \(moveNumber), visits=\(result.rootVisits))")
+        lowValueStreak[player] = 0
+        return true
+    }
+
+    /// `move` is the GTP vertex actually returned (`resign` included), echoed as the `play` line.
+    static func analysisPayload(_ r: SearchResult?, move: String, size: Int) -> String {
         var lines: [String] = []
         if let r, let best = r.candidates.first {
             let pv = best.pv.map { Coordinates.gtpString($0, size: size) }.joined(separator: " ")
             lines.append("info move \(Coordinates.gtpString(best.move, size: size)) visits \(best.visits) winrate \(String(format: "%.6f", r.searchExpected)) scoreLead \(String(format: "%.6f", r.searchScoreLead)) prior \(String(format: "%.6f", best.prior)) order 0 pv \(pv)")
         }
-        lines.append("play \(Coordinates.gtpString(move, size: size))")
+        lines.append("play \(move)")
         return "\n" + lines.joined(separator: "\n")
     }
 

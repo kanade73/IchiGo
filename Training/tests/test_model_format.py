@@ -37,6 +37,14 @@ def test_roundtrip_hard_output_identical(model, tmp_path):
     assert np.array_equal(loaded.gates, model.hard_gates())
 
 
+def test_feature_version_is_carried_into_the_manifest(model, tmp_path):
+    assert export_model(model, str(tmp_path / "v1.ichigo"), [9], {"runId": "t"})["featureVersion"] == 1
+    model.feature_version = 2  # set by model_from_checkpoint from a v2 training run
+    manifest = export_model(model, str(tmp_path / "v2.ichigo"), [9], {"runId": "t"})
+    assert manifest["featureVersion"] == 2
+    assert MF.read_model(str(tmp_path / "v2.ichigo")).manifest["featureVersion"] == 2
+
+
 def test_overwrite_control_and_no_partial_output(model, tmp_path):
     out = tmp_path / "m.ichigo"
     export_model(model, str(out), [9])
@@ -73,7 +81,7 @@ def _corrupt(out, fn):
 
 @pytest.mark.parametrize("mutate", [
     lambda m: m.__setitem__("version", 2),
-    lambda m: m.__setitem__("featureVersion", 2),
+    lambda m: m.__setitem__("featureVersion", 7),
     lambda m: m.__setitem__("rulesId", "japanese"),
     lambda m: m["headTensors"].pop(),
     lambda m: m["headTensors"].append(dict(m["headTensors"][0])),

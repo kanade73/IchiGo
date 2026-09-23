@@ -568,3 +568,69 @@ A/B 結果（`reports/matches/`配下、いずれも事故 0）:
 固定 400 visits の比較は 100 局ではなく 6 局（3 開局×色交換、`--genmove-timeout 600`）に縮小した: A 側は 1 手ごとに leaf を新規展開するたび count=8 本のプレイアウトを（`avgPlayoutsPerLeaf`≈8.00、`maxMovesHitFraction`≈0.000＝ほぼ全プレイアウトが自然な2手パスで終局）毎手 evaluator 呼び出しで進めるため、1 手あたり数十秒、1 局 15〜30 分かかり、100 局では 30 時間規模になる見積もりだった。加えて実行中にこのセッションの nohup 済みバックグラウンドプロセスが環境側の要因で 2 回強制終了された（システムスリープではない — `uptime` 35 日・`caffeinate` 稼働中を確認、再起動ログもなし。原因は特定できていないが、セッション境界での孤児プロセス回収の可能性が高い）。3 回目の起動（`--genmove-timeout 600`）で完走、事故 0。
 
 結論: 等時間での大敗は value_rollout 自体の質の問題ではなく、計算コスト由来の visits 枯渇が原因と切り分けられた。固定 visits でそろえると、n=6 と小標本ながら rollout ブレンド（W=0.5）が network 単体に勝ち越しており（CI 下限がちょうど 0.5、事故 0）、09-10 06:00 で不採用にした ownership 由来 value とは対照的に、プレイアウト由来の value 自体には探索に有用な情報がある可能性が高い。ただし現在の推論速度（B の 400 visits が 1 手 0.1 秒未満、A の rollout(8) が 1 手数十秒、約2〜3桁遅い）では実運用の時間制御下（sudden death や固定秒数）で全く成立しない。次の一手の候補: (1) count・maxPlayoutMoves を大幅に下げて value の質と速度のバランス点を探る、(2) rollout 専用の軽量・高速バックエンド（cpu-packed など）の強制、(3) 当面は `.network` を既定のまま維持し `--value-source rollout` は実装として残す（今回の実装・CLI・ログ機構自体は事故ゼロで正しく動作した）。n が小さい固定 visits 比較は追試の余地があるが、時間コストの結論（等時間では不成立）は 100 局規模の等時間 A/B 2 本で確定している。
+
+### 2026-09-23: CGOS 初出場（RinGo-LGN）、投了、死活ベンチ、featureVersion 2
+
+**外部基準と CGOS。** gnugo 3.8 `--level 10 --chinese-rules --capture-all-dead --positional-superko`（CGOS 公式サンプルと同じ。死に石推定なし）に、`p4-local-wide512-200k` 800 visits で固定開局 10 × 色交換 20 局: 10-0-10（CI [0.25, 0.75]）。CGOS 9 路の Gnugo アンカーは 1800 なので、この時点の棋力はその近辺。公開 CGOS（yss-aya.com:6809、5 分切れ負け、komi 7、Tromp-Taylor）に `RinGo-LGN` で 2 局: 対 kata1_b40_fdx6c_v1（2941）W+88、対 khd_N97-8（2894）B+19。設定・パスワードは `runs/cgos/ringo-lgn/`（gitignore）、supervisor は `runs/cgos/ringo-lgn/run.sh`（tmux + caffeinate）。
+
+**敗因（KataGo b18c384 200 visits で全手検討）。** どちらも「教師は死と見る石を生きと読んだ」:
+- 1 局目: 19 手目 H4 で黒勝率 0.21 → 0.005（約 10 目損）。唯一の手 B8 は policy 1 位（0.35）だったが、左の黒一団の ownership を 0.63〜0.95（生き）と見ており、探索がそれを捨てた。白の急所 E5（prior 0.05）/C8（0.12）は読まれなかった。
+- 2 局目: 24 手目で右辺の白 5 子（G4 G3 H2 H5 J6）が死（-10.8）なのに、自己評価 0.77（生ネット 0.83〜0.90）のまま死に石へ手を足し続けた。
+
+**修正（対局まわり）。**
+- 投了: `ichigo gtp --resign-threshold T [--resign-consecutive N] [--resign-min-move M]`（既定 off、仕様 03 §7 どおり）。探索勝率（手番側）< T が自分の genmove で N 手連続（既定 3）、M 手目以降（既定 盤面積/4）、50 visits 以上、watchdog fallback は数えない。投了時はその手を盤に打たず探索木を捨てる。投了なし検証: 既存対局ログ 1,754 engine-game で T=0.03・N=3 は勝局・引分での誤投了 0、負局 702 のうち 168 を投了（CGOS 1 局目は 122 手 → 91 手目で投了していた）。CGOS 設定はこの値。
+- CGOS client: 投了は analysis を付けず `resign` だけ送る。相手の `play <c> resign` をエンジンへ転送しない（従来は GTP エラーで client ごと終了する潜在バグ）。統合テスト 1 件追加。
+- match runner: gnugo の大文字 `PASS` を連続パスと数えず終局後も打ち続けていた → `genmove` を正規化。`resign` を `<winner>+Resign`（集計対象）として終局。SGF コメントの `]` を未エスケープで書いており、自前の棋譜が `ichigo features` で読めなかった → エスケープ（既存 726 局はコピー側で修正）。
+- 注意: runner の `scoreDisagreement` は文字列比較のため `B+10` と `B+10.0` を不一致と数える（外部エンジン相手では毎局 True、未修正）。
+
+**死活ベンチ（`Scripts/death_bench.py`）。** 自分の対局 728 局（エンジン同士 706、gnugo 20、CGOS 2。uniform 相手は除外）から 59,966 局面、8 手目以降・重複除去で bench 6,526 / train 43,351 局面（対局単位で分割、bench = CGOS・gnugo 全局 + 残りの sha256(gameId)%10==0、共有開局の局面は train から除外）。bench は同じ教師（g170e-b20c256x2、`configs/teacher-katago-analysis.cfg`）で Mac（Metal）ラベル。**Mac ラベルは評価専用で学習には混ぜない**（本番ラベルは CUDA 版で統一する既定方針どおり）。指標: 教師 ownership（手番視点）が石の色と逆向きに |o| ≥ 0.6 の石を「教師上の死石」とし、モデル ownership の符号が一致した割合（deadRecall）。`ichigo eval-batch`（新規、JSONL 一括評価、featureVersion 不一致は拒否）の出力を採点する。`death_bench.py run --model M.ichigo` で一括実行。
+
+全 6,526 局面（教師上の死石 31,963、死石群（3 石以上）を含む局面 3,382、ラベル拒否 0）:
+
+| モデル | 局面 | 死石の検出率（deadRecall） | 生き石の正解率 | 死石群を丸ごと見逃した局面 | value MAE（教師比） | value の偏り |
+|---|---|---|---|---|---|---|
+| p2-small-gl10 | 6526 | 0.292（31963 石） | 0.985 | 876 / 3382 | 0.287 | -0.006 |
+| p3-small-gl10-local | 6526 | 0.339（31963 石） | 0.977 | 607 / 3382 | 0.283 | -0.021 |
+| p4-local-gl30-200k | 6526 | 0.339（31963 石） | 0.976 | 651 / 3382 | 0.295 | -0.009 |
+| p4-local-wide512-200k | 6526 | 0.354（31963 石） | 0.977 | 656 / 3382 | 0.283 | -0.030 |
+| p7-small-headv3 | 6526 | 0.269（31963 石） | 0.986 | 918 / 3382 | 0.278 | +0.007 |
+| p8-small-headv3-200k | 6526 | 0.304（31963 石） | 0.986 | 912 / 3382 | 0.254 | +0.000 |
+| p8-wide512-headv3-x3data | 6526 | 0.346（31963 石） | 0.987 | 772 / 3382 | 0.252 | -0.012 |
+
+phase 10（サーバーで 09-10 に起動したまま未回収だった）も同じベンチで測った: C=2048 head v3 3 倍データ 200k は hard top1 **0.412** / MAE 0.259（policy 最良）、deadRecall **0.403**（見逃し 593 / 3,382、value MAE 0.263）。C=1024 同は 0.401 / **0.253**、deadRecall 0.369（700 / 3,382、value MAE 0.246）。ゲート数を増やすと死石の検出は少し上がる（0.35 → 0.40）が、6 割はまだ見逃す。どちらも `models/p10-*.ichigo` に export 済み（チャンピオンとの対局は未実施）。
+
+教師が死と見る石のうち、どのモデルも 3 割前後しか死と見ない（生き石はほぼ正しい）＝「生き」側への強い偏り。policy/value を改善してきた変更（幅、head v3、3 倍データ）はこの数字をほとんど動かしていない。
+
+**featureVersion 2（仕様 01 §1 に追記）。** 32 チャンネルの形を保ったまま channel 6〜15（履歴 t=3〜7）を、シチョウ（手番側/相手の取られる連、シチョウ成立点）、Benson の pass-alive 領域、呼吸点 4 以上、眼領域（8 点以下・単色境界・欠け眼除外）、二眼候補の連、に置き換えた。石の配置だけで決まるので encoder が snapshot の現局面から盤を組み直して計算し、探索・自己対局・GTP の変更は不要。backend/Metal/配線も無変更。モデル manifest・dataset・checkpoint が `featureVersion` を持ち回り、`ichigo features --feature-version 2`、`LogicEvaluator` がモデルの版で encode する。Swift: 手計算テスト 5 件（隅のシチョウ 2 種、二眼の隅の石、欠け眼、encoder v1/v2 差分）、loader・evaluator の版テスト。Python: dataset の版伝播・混在拒否、export manifest の版。v2 パイロット（bench ラベルの一部で CPU 60 step）で build-data → train → export → Swift `eval-batch`/GTP、`check_model_parity.py` PASS（全層 bit 一致）。探索速度は v1 比約 -12%（wide512、M5）。教師データ 356,414 局面（positions-9 108,676 + batch2 247,738）を v2 で再抽出し、positionId 列が v1 と完全一致（既存ラベルをそのまま結合できる）。
+
+**学習前の見込み（ロジスティックプローブ、bench 全 252,757 石、対局単位で 1/5 を hold-out）。** 教師上の死石 vs 生き石の判別で、チャンピオンの ownership だけ AUC 0.825（deadRecall 0.298）、＋その点の v1 特徴 0.833（0.330）、＋v2 特徴 **0.909（0.500）**。v2 の平面には現モデルが持っていない死石の情報がある（LGN が学習で使えるかは phase 11 で見る）。
+
+**サーバー運用メモ。** プロジェクトはサーバーのローカルディスク上（git なし、コードは rsync で同期。サーバー側だけの編集がないことを HEAD との sha256 比較で確認してから上書きした）。GPU 7〜9 は別用途のプロセスが常駐しているので phase 11 は GPU 0〜6 だけを使う。KataGo（`tools/katago`、AppImage）は `LD_LIBRARY_PATH` に `Training/.venv` の `nvidia/*/lib` と `/usr/local/cuda/lib64` が要る。`tests/test_train.py::test_resume_is_bit_identical` はサーバー（48 コア）では CPU 並列の加算順で bit 一致せず落ちる（`OMP_NUM_THREADS=1` なら通る、今回の変更とは無関係）。
+
+**phase 11（サーバー、`configs/experiments/phase11/`）。** small head v3 100k × {x3data, +dagger, v2, v2+dagger}（GPU 0〜3、x3data は同 step 数の v1 基準）、wide512 head v3 200k × {+dagger, v2, v2+dagger}（GPU 4〜6、v1 基準は既存 p8-wide512-headv3-x3data-200k）。validation は dataset ごとに構成が違うので比較には使わず、死活ベンチ・対局（チャンピオンとの 1 秒/手リーグ、gnugo 戦）で判断する。手順:
+
+```sh
+# Mac -> サーバーへ転送: data/positions-9-v2.jsonl data/positions-9-batch2-v2.jsonl
+#                        data/dagger-9/train-v1.jsonl data/dagger-9/train-v2.jsonl
+# 1. 自分の対局の局面を CUDA 教師でラベル（10 GPU 並列、43,351 局面で数分）
+python3 Scripts/split_positions.py --positions data/dagger-9/train-v1.jsonl --chunks 10 --out data/dagger-9/chunks
+for i in $(seq 0 9); do
+  CUDA_VISIBLE_DEVICES=$i uv run --project Training python -m ichigo_train label \
+    --positions data/dagger-9/chunks/chunk-0$i.jsonl --teacher-bin katago \
+    --teacher-model <g170e-b20c256x2 .bin.gz> --teacher-config configs/teacher-katago-analysis.cfg \
+    --out data/dagger-9/chunks/labels-0$i.jsonl &
+done; wait
+cat data/dagger-9/chunks/labels-0*.jsonl > data/dagger-9/train-labels.jsonl
+# 2. dataset（LABELS_X3 = dataset-9x3 を作ったラベル一式を連結したもの。--results 等のオプションも dataset-9x3 と同じにする）
+cat data/positions-9-v2.jsonl data/positions-9-batch2-v2.jsonl > data/positions-9x3-v2.jsonl
+cat $LABELS_X3 data/dagger-9/train-labels.jsonl > data/labels-9x3-dagger.jsonl
+uv run --project Training python -m ichigo_train build-data --positions data/positions-9x3-v2.jsonl --labels <LABELS_X3 連結> --out data/dataset-9x3-v2
+cat data/positions-9.jsonl data/positions-9-batch2.jsonl data/dagger-9/train-v1.jsonl > data/positions-9x3-dagger.jsonl
+uv run --project Training python -m ichigo_train build-data --positions data/positions-9x3-dagger.jsonl --labels data/labels-9x3-dagger.jsonl --out data/dataset-9x3-dagger
+cat data/positions-9x3-v2.jsonl data/dagger-9/train-v2.jsonl > data/positions-9x3-dagger-v2.jsonl
+uv run --project Training python -m ichigo_train build-data --positions data/positions-9x3-dagger-v2.jsonl --labels data/labels-9x3-dagger.jsonl --out data/dataset-9x3-dagger-v2
+# 3. 起動
+python3 Scripts/launch_experiments.py launch --matrix configs/experiments/phase11/matrix.json
+# 4. 評価（Mac）: export した .ichigo ごとに
+python3 Scripts/death_bench.py run --model models/<run>.ichigo
+```

@@ -27,6 +27,23 @@ Python spatial は C-contiguous `[B,S,S,32] uint8`、Swift は同じ一次元順
 
 存在しない過去の石配置は全0。pass も1手として履歴を進める。初期配置ありの棋譜では初期配置を t=0 とし、それ以前を0とする。Python でルールを再実装せず Swift feature exporter が正式な学習入力を生成する。
 
+### featureVersion 2（連・眼の特徴、2026-09-23）
+
+CGOS の 2 敗がどちらも「教師は死と見る石を生きと読んだ」ことによる（`docs/implementation-status.md` 2026-09-23）。2 入力ゲートは連に沿った集約が苦手なため、盤上の石だけで決まる連・領域レベルの事実を正確に計算して入力する。チャンネル数（32）と配置は v1 と同じで、変わるのは channel 6〜15 の意味だけ（backend・Metal カーネル・配線は変更不要）。履歴は t=1,2（channel 2〜5）までに減らす。
+
+| channel | v2 の意味（手番側視点） |
+|---|---|
+| 0〜5 | v1 と同じ（現局面、1手前、2手前の石） |
+| 6, 7 | 手番側 / 相手の石で、シチョウで取られる連（呼吸点1: 守る側が先でも取られる、呼吸点2: 攻める側のある一手で取られる）。KataGo V7 feature 14 を色で分けたもの |
+| 8 | 相手の呼吸点2の連に対して、シチョウが成立する手番側の着手点（KataGo V7 feature 17） |
+| 9, 10 | 手番側 / 相手の pass-alive 領域（Benson、石と地。`calculateArea` で大きな地・非 pass-alive 石の拡張なし） |
+| 11, 12 | 手番側 / 相手の、呼吸点4以上の連の石（v1 の 3以上 を細分） |
+| 13, 14 | 手番側 / 相手の眼領域: 4近傍連結の空点領域で大きさ8以下、接する石がその色だけ。1点の場合は欠け眼でない（`Board.isSimpleEye`）こと |
+| 15 | 自分の色の眼領域に2つ以上接する連の石（色は問わない。channel 0/1 と組み合わせて使う） |
+| 16〜31 | v1 と同じ |
+
+計算は `Sources/IchiGoFeatures/GroupFeatures.swift`。どの平面もコウ・履歴・超コウに依存しないため、encoder が snapshot の現局面配置から盤を組み直して計算する（探索・export に追加状態は要らない）。`positionId` は特徴と無関係なので、v1 用の教師ラベルは v2 の局面行にそのまま結合できる。モデル manifest の `featureVersion` が 1 か 2 かで evaluator が encoder を選び、`ichigo features --feature-version 2` の各行には `"featureVersion": 2` が付く（無い行は v1）。dataset・checkpoint・manifest は同じ値を持ち回り、混在は build-data で拒否する。探索速度は v1 比で約 12% 低下（M5、wide512）。
+
 `global[B,4] float32`:
 0: `komiSelf/(S*S)`（白手番なら komi、黒なら -komi）、1: `S/19`、2: `min(moveNumber,2*S*S)/(2*S*S)`、3: `min(consecutivePasses,2)/2`。
 komi は白への加点、moveNumber は初期配置後の着手数。v1 は03の単一ルールのみ対応し、ルールを global で近似しない。

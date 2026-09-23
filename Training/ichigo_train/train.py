@@ -57,7 +57,7 @@ from . import losses as L
 from .checkpoint import load_checkpoint, model_from_checkpoint, save_checkpoint, set_rng_state
 from .config import ConfigError, load_config
 from .data_loader import ShardSampler, augment_d4, load_split_arrays, to_tensors
-from .dataset import manifest_hash
+from .dataset import manifest_hash, read_manifest
 from .discretize import GumbelSchedule, PrefixSchedule
 from .metrics import CSV_FIELDS, MetricsCSV, evaluate_split, gate_statistics, write_json
 from .model_factory import build_model_from_config, model_spec_from_config
@@ -114,6 +114,8 @@ class Trainer:
             raise RuntimeError("device=cuda requested but CUDA is not available")
         self.fixture = bool(cfg["fixtureMode"])
         self.dataset_hash = "fixture:" + _sha_file(os.path.join(cfg["data"], "fixture.npz")) if self.fixture else manifest_hash(cfg["data"])
+        # the input encoding the model learns; carried into checkpoints and the exported manifest
+        self.feature_version = FEATURE_VERSION if self.fixture else int(read_manifest(cfg["data"])["featureVersion"])
         self.S = cfg["boardSize"]
         self.step = 0
         self.warnings: list[dict] = []
@@ -208,7 +210,7 @@ class Trainer:
             "must build an identical model before it is wrapped in DistributedDataParallel)")
 
     def _check_resume(self, ck):
-        if ck["featureVersion"] != FEATURE_VERSION:
+        if ck.get("featureVersion", FEATURE_VERSION) != self.feature_version:
             raise ConfigError("checkpoint featureVersion mismatch")
         if ck["datasetHash"] != self.dataset_hash:
             raise ConfigError("checkpoint dataset hash does not match the configured dataset; start a new run")
@@ -370,7 +372,7 @@ class Trainer:
             return
         st = self.schedule.state_at(self.step)
         save_checkpoint(os.path.join(self.out, name), self.model, self.opt, self.sched, self.step, st.frozen_prefix, self.sampler.state(),
-                        self.aug_rng, self.cfg, self.dataset_hash, FEATURE_VERSION,
+                        self.aug_rng, self.cfg, self.dataset_hash, self.feature_version,
                         {"bestHard": self.best_hard, "warnings": self.warnings}, gumbel_rng=self.gumbel_rng)
 
     def run(self) -> int:

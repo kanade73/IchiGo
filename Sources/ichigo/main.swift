@@ -63,10 +63,20 @@ commands:
                                  evaluate one position JSON (spatial/global/legal arrays) and print
                                  raw outputs and the post-processed evaluation as JSON; --dump-layers
                                  writes every logic layer's bits ([L,S,S,C] uint8) for parity checks
+  eval-batch --model PATH --positions FILE.jsonl --out FILE.jsonl [--backend ...] [--batch 64]
+                                 evaluate every row of an `ichigo features` JSONL and write one JSONL
+                                 row per position: positionId, expectedResult, winDrawLoss,
+                                 scoreMean, ownership (side to move). Rows must carry the model's
+                                 featureVersion (absent = 1)
   gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|cpu-packed|metal|metal-packed|auto] [--visits N]
       [--value-source network|ownership|blend|rollout] [--value-blend W] [--value-k K] [--value-b B]
       [--rollout-count N] [--rollout-max-moves M]
-                                 GTP engine on stdin/stdout (logs on stderr); at least one model
+      [--resign-threshold T] [--resign-consecutive N] [--resign-min-move M]
+                                 GTP engine on stdin/stdout (logs on stderr); at least one model.
+                                 Resignation is off unless --resign-threshold is given: genmove then
+                                 answers `resign` once the search value (side to move, draw = 0.5)
+                                 is below T on N own genmoves in a row (default 3), counting only
+                                 moves from M on (default a quarter of the board area, 20 on 9x9)
   selfplay --model PATH --games N --out DIR --seed N [--visits N] [--size 9|19]
            [--backend cpu|cpu-packed|metal|metal-packed|auto]
            [--value-source network|ownership|blend|rollout] [--value-blend W] [--value-k K] [--value-b B]
@@ -74,9 +84,11 @@ commands:
                                  self-play with the model on both sides; writes SGF + root visit
                                  targets (JSONL) per game
   features --sgf-dir DIR --out FILE --size 9|19 [--rules cgos-area-psk-v1] [--komi K]
-           [--max-games N] [--min-turn T]
+           [--max-games N] [--min-turn T] [--feature-version 1|2]
                                  replay SGF main lines and stream one JSONL row per position;
-                                 rejected games go to <out>.rejects.jsonl with file name and move
+                                 rejected games go to <out>.rejects.jsonl with file name and move.
+                                 --feature-version 2 swaps history t=3..7 for group planes
+                                 (docs/spec/01-network.md §1); positionId is the same in both
   benchmark --model PATH --positions FILE --batches 1,8,32 --out FILE.json
             [--backends cpu,cpu-packed,metal,metal-packed] [--warmup 50] [--iters 200]
                                  docs/spec/05-validation.md §7 Mac benchmark: warmup then measure
@@ -145,6 +157,8 @@ func cmdFeatures(_ args: Args) {
     if let k = komiOverride, !k.isFinite { fail("--komi must be a number", .usage) }
     let maxGames = args.options["max-games"].flatMap(Int.init) ?? Int.max
     let minTurn = args.options["min-turn"].flatMap(Int.init) ?? 0
+    let featureVersion = args.options["feature-version"].flatMap(Int.init) ?? FeatureEncoder.featureVersion
+    guard FeatureEncoder.supportedFeatureVersions.contains(featureVersion) else { fail("--feature-version must be 1 or 2", .usage) }
     let fm = FileManager.default
     guard let names = try? fm.contentsOfDirectory(atPath: dir) else { fail("cannot list \(dir)", .usage) }
     let sgfs = names.filter { $0.lowercased().hasSuffix(".sgf") }.sorted()
@@ -163,7 +177,7 @@ func cmdFeatures(_ args: Args) {
         do {
             let replay = try PositionExport.replay(sgf: text, expectedSize: size, komiOverride: komiOverride)
             for turn in minTurn ... replay.moves.count {
-                var row = try PositionExport.row(replay, turn: turn)
+                var row = try PositionExport.row(replay, turn: turn, featureVersion: featureVersion)
                 row["sourceFile"] = name
                 out.write(try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys, .withoutEscapingSlashes]))
                 out.write("\n".data(using: .utf8)!)
@@ -179,7 +193,7 @@ func cmdFeatures(_ args: Args) {
         }
     }
     try? out.close(); try? rejects.close()
-    let summary: [String: Any] = ["games": games, "positions": positions, "rejected": rejected, "out": outPath, "rejects": rejectPath, "rulesId": rules, "boardSize": size, "featureVersion": FeatureEncoder.featureVersion]
+    let summary: [String: Any] = ["games": games, "positions": positions, "rejected": rejected, "out": outPath, "rejects": rejectPath, "rulesId": rules, "boardSize": size, "featureVersion": featureVersion]
     FileHandle.standardError.write((String(data: try! JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]), encoding: .utf8)! + "\n").data(using: .utf8)!)
 }
 
@@ -270,6 +284,56 @@ func dumpLayers(_ backend: any LogicBackend, features: FeatureBatch) async throw
     if let metal = backend as? MetalBackend { return try await metal.layerOutputs(features: features) }
     if let metalPacked = backend as? MetalPackedBackend { return try await metalPacked.layerOutputs(features: features) }
     throw LogicModelError.backendUnavailable("--dump-layers is not supported for backend \(backend.name)")
+}
+
+/// `eval-batch`: model outputs for a whole positions JSONL (Scripts/death_bench.py score reads them).
+func cmdEvalBatch(_ args: Args) async {
+    let model = loadModel(args.require("model"))
+    let positionsPath = args.require("positions")
+    let outPath = args.require("out")
+    let batchSize = max(1, args.options["batch"].flatMap(Int.init) ?? 64)
+    let backend = makeBackend(args.options["backend"] ?? "cpu-packed", model: model)
+    let wantVersion = model.manifest.featureVersion
+    guard let text = try? String(contentsOfFile: positionsPath, encoding: .utf8) else { fail("cannot read \(positionsPath)", .usage) }
+    guard FileManager.default.createFile(atPath: outPath, contents: nil), let out = FileHandle(forWritingAtPath: outPath) else { fail("cannot write \(outPath)", .usage) }
+    var pending: [(id: String, size: Int, spatial: [UInt8], global: [Float], legal: [UInt8])] = []
+    var written = 0
+    func flush() async {
+        guard let S = pending.first?.size else { return }
+        do {
+            let features = try FeatureBatch(
+                boardSize: S, batch: pending.count, spatial: pending.flatMap(\.spatial), global: pending.flatMap(\.global), legal: pending.flatMap(\.legal)
+            )
+            let raw = try await backend.evaluate(features: features)
+            let evals = try Postprocess.evaluate(raw: raw, features: features, temperature: model.manifest.calibrationTemperature)
+            for (row, e) in zip(pending, evals) {
+                let obj: [String: Any] = [
+                    "positionId": row.id, "expectedResult": e.expectedResult, "winDrawLoss": e.winDrawLoss, "scoreMean": e.scoreMean,
+                    "ownership": e.ownership.map { (Double($0) * 1e4).rounded() / 1e4 },
+                ]
+                out.write(try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]))
+                out.write("\n".data(using: .utf8)!)
+            }
+            written += pending.count
+        } catch {
+            fail("eval-batch failed: \(error)", .inference)
+        }
+        pending.removeAll(keepingCapacity: true)
+    }
+    for (i, line) in text.split(separator: "\n", omittingEmptySubsequences: true).enumerated() {
+        guard let obj = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] else { fail("positions line \(i): not valid JSON", .usage) }
+        let version = obj["featureVersion"] as? Int ?? 1
+        guard version == wantVersion else { fail("positions line \(i): featureVersion \(version) but the model expects \(wantVersion)", .usage) }
+        guard let id = obj["positionId"] as? String else { fail("positions line \(i): missing positionId", .usage) }
+        let f = parsePositionFields(obj, context: "positions line \(i)")
+        guard model.manifest.boardSizes.contains(f.size) else { fail("positions line \(i): board size \(f.size) not supported by the model", .usage) }
+        if let S = pending.first?.size, S != f.size { await flush() }
+        pending.append((id, f.size, f.spatial, f.global, f.legal))
+        if pending.count >= batchSize { await flush() }
+    }
+    await flush()
+    try? out.close()
+    FileHandle.standardError.write("eval-batch: \(written) positions, backend \(backend.name), featureVersion \(wantVersion)\n".data(using: .utf8)!)
 }
 
 func cmdEval(_ args: Args) async {
@@ -364,6 +428,18 @@ func cmdGTP(_ args: Args) async {
     cfg.visits = args.options["visits"].flatMap(Int.init) ?? 100
     cfg.defaultBoardSize = slots[9] != nil ? 9 : 19
     cfg.searchSettings.valueSource = parseValueSource(args, boardSize: cfg.defaultBoardSize)
+    if let raw = args.options["resign-threshold"] {
+        guard let t = Double(raw), t > 0, t < 1 else { fail("--resign-threshold must be a number in (0,1), got \(raw)", .usage) }
+        cfg.resignThreshold = t
+    }
+    if let raw = args.options["resign-consecutive"] {
+        guard let n = Int(raw), n >= 1 else { fail("--resign-consecutive must be a positive integer, got \(raw)", .usage) }
+        cfg.resignConsecutiveMoves = n
+    }
+    if let raw = args.options["resign-min-move"] {
+        guard let m = Int(raw), m >= 0 else { fail("--resign-min-move must be a non-negative integer, got \(raw)", .usage) }
+        cfg.resignMinMoveNumber = m
+    }
     let engine: GTPEngine
     do {
         engine = try GTPEngine(models: slots, config: cfg, log: { msg in FileHandle.standardError.write(("[ichigo] " + msg + "\n").data(using: .utf8)!) })
@@ -698,6 +774,7 @@ switch command {
 case "doctor": cmdDoctor()
 case "inspect": cmdInspect(args)
 case "eval": await cmdEval(args)
+case "eval-batch": await cmdEvalBatch(args)
 case "features": cmdFeatures(args)
 case "gtp": await cmdGTP(args)
 case "selfplay": await cmdSelfplay(args)

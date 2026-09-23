@@ -50,6 +50,27 @@ actor SlowEvaluator: PositionEvaluating {
     func preWarm(size: Int) async throws {}
 }
 
+/// Fake evaluator (Tests only) under which `losing` is always almost lost: uniform policy, and an
+/// expected result of 0.01 for `losing` to move / 0.99 for the other colour to move.
+actor OneSidedEvaluator: PositionEvaluating {
+    let capabilities: ModelCapabilities
+    let losing: Player
+    init(sizes: Set<Int>, losing: Player) {
+        capabilities = ModelCapabilities(boardSizes: sizes, rulesID: IchiGoRules.rulesID, hasOwnership: true)
+        self.losing = losing
+    }
+    func evaluate(_ positions: [PositionSnapshot]) async throws -> [LogicEvaluation] {
+        positions.map { s in
+            let P = s.boardSize * s.boardSize
+            let n = Float(s.legal.reduce(0) { $0 + Int($1) })
+            let policy = s.legal.map { Float($0) / n }
+            let e: Float = s.toMove == losing ? 0.01 : 0.99
+            return LogicEvaluation(policy: policy, winDrawLoss: [e, 0, 1 - e], expectedResult: e, scoreMean: 0, ownership: [Float](repeating: 0, count: P))
+        }
+    }
+    func preWarm(size: Int) async throws {}
+}
+
 /// Thread-safe log sink (Tests only) so a test can assert on what `GTPEngine` writes to stderr.
 final class LogCapture: @unchecked Sendable {
     private let lock = NSLock()
@@ -170,6 +191,81 @@ final class GTPEngineTests: XCTestCase {
     /// docs/implementation-status.md 2026-09-10 §4-5: rollout diagnostics (average playouts per
     /// leaf, fraction hitting `--rollout-max-moves`) are logged once per genmove alongside the
     /// existing `rawNN=`/`valueSource=` line, only when `valueSource` is `.rollout`.
+    // MARK: - resignation
+
+    private func makeOneSidedEngine(resignThreshold: Double?, minMove: Int? = 0, logs: LogCapture? = nil) throws -> GTPEngine {
+        var cfg = GTPEngine.Config(); cfg.visits = 8
+        cfg.resignThreshold = resignThreshold
+        cfg.resignMinMoveNumber = minMove
+        cfg.resignMinVisits = 1
+        let slot = GTPEngine.ModelSlot(evaluator: OneSidedEvaluator(sizes: [9], losing: .black), modelHash: "fake-9")
+        return try GTPEngine(models: [9: slot], config: cfg, log: { logs?.append($0) })
+    }
+
+    private func stoneCount(_ e: GTPEngine) async -> Int {
+        let board = await e.handle(line: "showboard")
+        return board.filter { $0 == "X" || $0 == "O" }.count
+    }
+
+    func testResignIsOffByDefault() async throws {
+        let e = try makeOneSidedEngine(resignThreshold: nil)
+        for _ in 0..<5 {
+            let b = await e.handle(line: "genmove b")
+            XCTAssertNotEqual(b, "= resign\n\n")
+            _ = await e.handle(line: "genmove w")
+        }
+    }
+
+    func testResignsOnThirdConsecutiveLowValueGenmoveWithoutPlayingIt() async throws {
+        let logs = LogCapture()
+        let e = try makeOneSidedEngine(resignThreshold: 0.05, logs: logs)
+        for _ in 0..<2 {
+            let b = await e.handle(line: "genmove b")
+            XCTAssertNotEqual(b, "= resign\n\n")
+            let w = await e.handle(line: "genmove w")
+            XCTAssertNotEqual(w, "= resign\n\n", "the winning side must never resign")
+        }
+        await expect(e, "genmove b", "= resign\n\n")
+        XCTAssertTrue(logs.snapshot().contains { $0.hasPrefix("genmove resign:") && $0.contains("on 3 consecutive own moves") })
+        // the resigned move was not played: still 4 stones and still black to move
+        let stones = await stoneCount(e)
+        XCTAssertEqual(stones, 4)
+        let again = await e.handle(line: "genmove b")
+        XCTAssertTrue(again.hasPrefix("= "), again)
+    }
+
+    func testResignWaitsForMinimumMoveNumber() async throws {
+        // default minimum on 9x9 is 81/4 = 20, so the first ten black genmoves never resign
+        let e = try makeOneSidedEngine(resignThreshold: 0.05, minMove: nil)
+        for _ in 0..<5 {
+            let b = await e.handle(line: "genmove b")
+            XCTAssertNotEqual(b, "= resign\n\n")
+            _ = await e.handle(line: "genmove w")
+        }
+    }
+
+    func testClearBoardResetsResignStreak() async throws {
+        let e = try makeOneSidedEngine(resignThreshold: 0.05)
+        for _ in 0..<2 {
+            _ = await e.handle(line: "genmove b")
+            _ = await e.handle(line: "genmove w")
+        }
+        _ = await e.handle(line: "clear_board")
+        let b = await e.handle(line: "genmove b")
+        XCTAssertNotEqual(b, "= resign\n\n")
+    }
+
+    func testAnalyzeReportsResignAsPlayLine() async throws {
+        let e = try makeOneSidedEngine(resignThreshold: 0.05)
+        for _ in 0..<2 {
+            _ = await e.handle(line: "genmove b")
+            _ = await e.handle(line: "genmove w")
+        }
+        let a = await e.handle(line: "kata-genmove_analyze b")
+        XCTAssertTrue(a.hasPrefix("=\ninfo move "), a)
+        XCTAssertTrue(a.hasSuffix("\nplay resign\n\n"), a)
+    }
+
     func testRolloutDiagnosticsAreLoggedPerGenmove() async throws {
         var cfg = GTPEngine.Config(); cfg.visits = 8
         cfg.searchSettings.valueSource = try ValueSourceFlags.parse(source: "rollout", blend: nil, k: nil, b: nil, rolloutCount: "3", rolloutMaxMoves: "40")

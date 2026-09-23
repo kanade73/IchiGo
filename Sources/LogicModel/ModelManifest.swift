@@ -18,6 +18,9 @@ public struct ModelManifest: Sendable, Equatable {
     public static let format = "ichigo.logic"
     public static let version = 1
     public static let featureVersion = 1
+    /// docs/spec/01-network.md §1: 1 = 7 moves of history, 2 = 2 moves + group planes. Both use
+    /// the same 32-channel layout, so every backend runs either; only the encoder differs.
+    public static let supportedFeatureVersions: Set<Int> = [1, 2]
     public static let supportedHeadVersions: Set<Int> = [1, 2, 3]
     public static let rulesID = "cgos-area-psk-v1"
     public static let gateEncoding = "truth-table-lsb-2a-plus-b"
@@ -41,6 +44,7 @@ public struct ModelManifest: Sendable, Equatable {
     public static let regionCount = regionGrid * regionGrid
     public static let regionHidden = regionCount * localHidden
 
+    public let featureVersion: Int
     public let headVersion: Int
     public let gateArity: Int
     public let gateEncoding: String
@@ -59,8 +63,9 @@ public struct ModelManifest: Sendable, Equatable {
     public init(
         headVersion: Int, boardSizes: [Int], channels: Int, layers: Int, dilations: [Int], calibrationTemperature: Float,
         files: [String: FileEntry], headTensors: [HeadTensor], trainingProvenanceJSON: String, rawJSON: String,
-        gateArity: Int = 2, gateEncoding: String = ModelManifest.gateEncoding
+        gateArity: Int = 2, gateEncoding: String = ModelManifest.gateEncoding, featureVersion: Int = ModelManifest.featureVersion
     ) {
+        self.featureVersion = featureVersion
         self.headVersion = headVersion; self.gateArity = gateArity; self.gateEncoding = gateEncoding
         self.boardSizes = boardSizes; self.channels = channels; self.layers = layers; self.dilations = dilations
         self.calibrationTemperature = calibrationTemperature; self.files = files; self.headTensors = headTensors
@@ -73,7 +78,7 @@ public struct ModelManifest: Sendable, Equatable {
 
     public static func == (a: ModelManifest, b: ModelManifest) -> Bool {
         a.boardSizes == b.boardSizes && a.channels == b.channels && a.dilations == b.dilations
-            && a.gateArity == b.gateArity && a.gateEncoding == b.gateEncoding
+            && a.gateArity == b.gateArity && a.gateEncoding == b.gateEncoding && a.featureVersion == b.featureVersion
             && a.files == b.files && a.headTensors == b.headTensors
     }
 
@@ -132,7 +137,8 @@ public struct ModelManifest: Sendable, Equatable {
         for k in required where m[k] == nil { throw LogicModelError.invalidManifest("missing key \(k)") }
         guard try str("format") == format else { throw LogicModelError.invalidManifest("unknown format") }
         guard try int("version") == version else { throw LogicModelError.invalidManifest("unsupported version \(m["version"] ?? "")") }
-        guard try int("featureVersion") == featureVersion else { throw LogicModelError.invalidManifest("unsupported featureVersion") }
+        let featureVersion = try int("featureVersion")
+        guard supportedFeatureVersions.contains(featureVersion) else { throw LogicModelError.invalidManifest("unsupported featureVersion") }
         let headVersion = try int("headVersion")
         guard supportedHeadVersions.contains(headVersion) else { throw LogicModelError.invalidManifest("unsupported headVersion \(headVersion)") }
         guard try str("rulesId") == rulesID else { throw LogicModelError.invalidManifest("unsupported rulesId") }
@@ -238,7 +244,8 @@ public struct ModelManifest: Sendable, Equatable {
         return ModelManifest(
             headVersion: headVersion, boardSizes: sizesAny, channels: channels, layers: layers, dilations: dilations,
             calibrationTemperature: Float(temp.doubleValue), files: files, headTensors: tensors,
-            trainingProvenanceJSON: provJSON, rawJSON: rawJSON, gateArity: gateArity, gateEncoding: gateEncoding
+            trainingProvenanceJSON: provJSON, rawJSON: rawJSON, gateArity: gateArity, gateEncoding: gateEncoding,
+            featureVersion: featureVersion
         )
     }
 }

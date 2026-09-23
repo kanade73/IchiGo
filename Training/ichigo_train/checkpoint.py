@@ -104,4 +104,5 @@ def model_from_checkpoint(ck: dict):
     # checkpoints inspectable and permit loading older minimal payloads.
     if "stateDict" in ck:
         model.load_state_dict(ck["stateDict"])
+    model.feature_version = int(ck.get("featureVersion", 1))  # carried into the exported manifest
     return model

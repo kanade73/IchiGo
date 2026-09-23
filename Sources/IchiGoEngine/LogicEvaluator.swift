@@ -40,7 +40,10 @@ public actor LogicEvaluator: PositionEvaluating {
     private let temperature: Float
 
     public init(model: LogicModelData, backend: any LogicBackend) {
-        capabilities = ModelCapabilities(boardSizes: Set(model.manifest.boardSizes), rulesID: ModelManifest.rulesID, hasOwnership: true)
+        capabilities = ModelCapabilities(
+            boardSizes: Set(model.manifest.boardSizes), rulesID: ModelManifest.rulesID, hasOwnership: true,
+            featureVersion: model.manifest.featureVersion
+        )
         modelHash = model.payloadHash
         self.backend = backend
         temperature = model.manifest.calibrationTemperature
@@ -59,7 +62,7 @@ public actor LogicEvaluator: PositionEvaluating {
         guard capabilities.boardSizes.contains(first.boardSize) else { throw EvaluatorError.unsupportedBoardSize(first.boardSize) }
         guard positions.allSatisfy({ $0.boardSize == first.boardSize }) else { throw EvaluatorError.mixedBoardSizes }
         if let i = positions.firstIndex(where: { $0.isGameFinished }) { throw EvaluatorError.gameFinished(index: i) }
-        let enc = try FeatureEncoder.encode(positions)
+        let enc = try FeatureEncoder.encode(positions, featureVersion: capabilities.featureVersion)
         let features = try FeatureBatch(boardSize: enc.boardSize, batch: enc.batch, spatial: enc.spatial, global: enc.global, legal: enc.legal)
         let raw = try await backend.evaluate(features: features)
         let out = try Postprocess.evaluate(raw: raw, features: features, temperature: temperature)

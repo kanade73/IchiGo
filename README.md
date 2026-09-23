@@ -6,15 +6,15 @@ Apple Silicon Mac で推論・探索・GTP 対局を行い、学習は PyTorch�
 
 **入口: [仕様書と実装順序](docs/spec/00-overview.md)** / **進捗: [docs/implementation-status.md](docs/implementation-status.md)**
 
-## 現状（2026-09-10）
+## 現状（2026-09-23）
 
 | 段階 | 状態 |
 |---|---|
 | M0 数値基盤（16 ゲート、32ch 特徴、`.ichigo` 形式、CPU 推論の Python/Swift 一致） | 完了 |
 | M1 学習（SGF→特徴、KataGo 教師ラベル、shard、学習/再開/離散化、過学習検収、baseline 対局） | 完了 |
 | M2a 9 路 CGOS 準備（時計、Metal/packed 推論、DDP 1/2/4 GPU、校正、CGOS ローカル統合、release パッケージ） | 完了（`make release-check` PASS） |
-| M2b 公開 CGOS 出場 | 未着手（接続先・アカウント設定待ち） |
-| 棋力 | 合法手 uniform に 100 戦全勝。教師（KataGo）比では policy top1 約 0.39、value は改善中（`docs/progress-summary.md` §4） |
+| M2b 公開 CGOS 出場 | 初出場（`RinGo-LGN`、yss-aya.com:6809、2 局 2 敗）。投了対応済み |
+| 棋力 | gnugo level 10 と 10-0-10（CGOS の Gnugo アンカーは 1800）。policy top1 約 0.39。弱点は死活: 教師が死と見る石の 3 割前後しか死と見ない（死活ベンチ、`docs/implementation-status.md` 2026-09-23）。対策の featureVersion 2 と自己対局局面の教師化を phase 11 で検証中 |
 
 進捗の総括は [docs/progress-summary.md](docs/progress-summary.md)、実験ログは [docs/implementation-status.md](docs/implementation-status.md)、運用手順は [docs/runbook.md](docs/runbook.md)。
 

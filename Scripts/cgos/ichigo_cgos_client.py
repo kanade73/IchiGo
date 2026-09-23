@@ -897,6 +897,10 @@ class CGOSClient:
             raise CGOSProtocolError(f"play requires 3 parameters, got {params!r}")
         color, coord, _timeleft_ms = params
         coord = coord.lower()
+        if coord == "resign":
+            # Not a board move: the engine would reject `play <c> resign`; gameover follows.
+            self.log.info("game %s: opponent %s resigned", self._current_gid, color)
+            return
         self._engine.notify_play(color, coord)
         if self._ledger is not None:
             self._ledger.append(color, coord, analysis=None, source="opponent")
@@ -919,7 +923,8 @@ class CGOSClient:
         self._engine.notify_time_left(color, timeleft_ms)
         move, analysis = self._engine.request_genmove(color, use_analysis=self._use_analysis)
 
-        reply = move if analysis is None else f"{move} {analysis}"
+        # A resignation goes out bare: analysis describes a move that is not being played.
+        reply = move if analysis is None or move == "resign" else f"{move} {analysis}"
         self._send(reply)
 
         if self._ledger is not None:

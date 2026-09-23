@@ -111,6 +111,17 @@ def test_gtpclient_play_rejection_returns_false_not_raise():
         c.close()
 
 
+def test_gtpclient_genmove_normalises_uppercase_pass():
+    c = GTPClient(fake("--moves", "PASS,D4"), name="fake")
+    try:
+        c.boardsize(9)
+        c.clear_board()
+        assert c.genmove("B") == "pass"
+        assert c.genmove("W") == "D4"
+    finally:
+        c.close()
+
+
 def test_gtpclient_timeout_then_kill():
     c = GTPClient(fake("--sleep-genmove", "5"), name="slow", timeout=0.3)
     try:
@@ -193,6 +204,26 @@ def test_two_game_fake_vs_fake_match_end_to_end(tmp_path):
     report_json = json.load(open(out / "report.json"))
     assert report_json["wins"] == 1 and report_json["losses"] == 1
     assert report_json["meanScore"] == 0.5
+
+
+def test_resign_ends_game_as_counted_loss_without_echo(tmp_path):
+    # B rejects `play ... resign`, so echoing the resignation would turn it into illegal_move.
+    engine_a = ("gtp", fake("--moves", "E5,RESIGN", "--result", "B+3.5"))
+    engine_b = ("gtp", fake("--moves", "G7,F3", "--result", "B+3.5", "--reject-play", "resign"))
+    out = tmp_path / "out"
+    runner = MatchRunner(engine_a=engine_a, engine_b=engine_b, games=2, size=9, komi=7.0, out_dir=str(out), seed=1, max_moves=20)
+    report = runner.run()
+
+    games = [json.loads(l) for l in open(out / "games.jsonl")]
+    assert [g["result"] for g in games] == ["W+Resign", "B+Resign"]
+    assert all(g["countedResult"] is True and g["incidents"] == [] for g in games)
+    assert games[0]["moves"] == ["E5", "G7"]
+    assert games[1]["moves"] == ["G7", "E5", "F3"]
+    sgf = (out / games[0]["sgfPath"]).read_text()
+    assert "RE[W+Resign]" in sgf
+    # the engine argv in the comment is written as A=[...]; its brackets must be escaped
+    assert "\\] B=[" in sgf and sgf.rstrip().endswith("\\]];B[ee];W[gc])")
+    assert report["wins"] == 0 and report["losses"] == 2
 
 
 def test_timeout_incident_recorded_and_match_continues(tmp_path):

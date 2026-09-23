@@ -100,14 +100,16 @@ public enum PositionExport {
         komi == komi.rounded() ? Int(komi) : Double(komi)
     }
 
-    /// One JSONL row (docs/spec/02-training.md §2) for turn `turn` of `replay`.
-    public static func row(_ replay: GameReplay, turn: Int) throws -> [String: Any] {
+    /// One JSONL row (docs/spec/02-training.md §2) for turn `turn` of `replay`. `positionId`
+    /// does not depend on `featureVersion`, so labels made for one version join the other.
+    public static func row(_ replay: GameReplay, turn: Int, featureVersion: Int = FeatureEncoder.featureVersion) throws -> [String: Any] {
         let snap = replay.snapshots[turn]
-        let enc = try FeatureEncoder.encode([snap])
+        let enc = try FeatureEncoder.encode([snap], featureVersion: featureVersion)
         let moves = Array(replay.moves.prefix(turn))
         let pid = canonicalHash(boardSize: replay.boardSize, komi: replay.komi, initialStones: replay.initialStones, initialPlayer: replay.initialPlayer, moves: moves)
         return [
             "schemaVersion": 1,
+            "featureVersion": featureVersion,
             "positionId": pid,
             "gameId": replay.gameId,
             "boardSize": replay.boardSize,

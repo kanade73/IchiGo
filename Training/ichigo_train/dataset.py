@@ -26,6 +26,7 @@ from .symmetry import map_point
 
 SCHEMA_VERSION = 1
 FEATURE_VERSION = 1
+SUPPORTED_FEATURE_VERSIONS = (1, 2)  # docs/spec/01-network.md §1; rows without the key are v1
 RULES_ID = "cgos-area-psk-v1"
 SHARD_SIZE = 4096
 TARGET_NAMES = ["policy", "expected_result", "score", "ownership", "wdl"]
@@ -159,8 +160,9 @@ def load_shard(path: str) -> dict[str, np.ndarray]:
 
 
 class DatasetWriter:
-    def __init__(self, out_dir: str, board_size: int, shard_size: int = SHARD_SIZE):
+    def __init__(self, out_dir: str, board_size: int, shard_size: int = SHARD_SIZE, feature_version: int = FEATURE_VERSION):
         self.out_dir = out_dir
+        self.feature_version = feature_version
         self.size = board_size
         self.shard_size = shard_size
         self.buffers = {s: ShardBuffer(board_size) for s in ("train", "validation", "test")}
@@ -196,7 +198,7 @@ class DatasetWriter:
         if self.counts["validation"] == 0 or self.counts["test"] == 0:
             raise ValueError(f"holdout split is empty ({self.counts}); add more games")
         manifest = {
-            "schemaVersion": SCHEMA_VERSION, "featureVersion": FEATURE_VERSION, "rulesId": RULES_ID,
+            "schemaVersion": SCHEMA_VERSION, "featureVersion": self.feature_version, "rulesId": RULES_ID,
             "boardSize": self.size, "shardSize": self.shard_size, "counts": self.counts, "shards": self.shards,
             "provenance": provenance,
         }
@@ -208,7 +210,7 @@ class DatasetWriter:
 def read_manifest(data_dir: str) -> dict:
     with open(os.path.join(data_dir, "manifest.json")) as f:
         m = json.load(f)
-    if m.get("schemaVersion") != SCHEMA_VERSION or m.get("featureVersion") != FEATURE_VERSION or m.get("rulesId") != RULES_ID:
+    if m.get("schemaVersion") != SCHEMA_VERSION or m.get("featureVersion") not in SUPPORTED_FEATURE_VERSIONS or m.get("rulesId") != RULES_ID:
         raise ValueError("dataset schema/feature/rules version mismatch")
     return m
 
@@ -286,10 +288,15 @@ def build_dataset(positions_path: str, labels_path: str, out_dir: str, provenanc
                 report["duplicates"] += 1
                 continue
             seen.add(r["positionId"])
+            fv = r.get("featureVersion", 1)
             if writer is None:
                 size = r["boardSize"]
-                writer = DatasetWriter(out_dir, size, shard_size)
+                if fv not in SUPPORTED_FEATURE_VERSIONS:
+                    raise ValueError(f"unsupported featureVersion {fv} in {positions_path}")
+                writer = DatasetWriter(out_dir, size, shard_size, feature_version=fv)
             assert r["boardSize"] == size, "mixed board sizes in one dataset"
+            if fv != writer.feature_version:
+                raise ValueError(f"mixed featureVersion in {positions_path}: {fv} after {writer.feature_version}")
             mask = list(lab.get("mask", [1, 1, 1, 1, 0]))
             wdl = [0.0, 0.0, 0.0]
             if wdl_from_results and r["gameId"] in wdl_from_results:

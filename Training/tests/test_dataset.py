@@ -93,6 +93,31 @@ def test_build_dataset_split_dedupe_and_shards(tmp_path):
         list(D.iter_split(str(out), m["shards"][0]["split"]))
 
 
+def _many_games(n=60):
+    rng = np.random.default_rng(0)
+    pts = [f"{c}{r}" for c in "ABCDEFGHJ" for r in range(1, 10)]
+    rows = []
+    for g in range(n):
+        seq = list(rng.permutation(pts)[:6])
+        rows += _game(g, [["B", "E5"], ["W", "D4"]] + [["B" if i % 2 == 0 else "W", m] for i, m in enumerate(seq)])
+    return rows
+
+
+def test_feature_version_comes_from_the_position_rows(tmp_path):
+    rows = _many_games()
+    lab = tmp_path / "lab.jsonl"
+    _write(lab, [_label(r) for r in rows])
+    pos = tmp_path / "pos.jsonl"
+    _write(pos, rows)  # no featureVersion key: v1
+    assert D.build_dataset(str(pos), str(lab), str(tmp_path / "v1"), {})["featureVersion"] == 1
+    _write(pos, [dict(r, featureVersion=2) for r in rows])
+    assert D.build_dataset(str(pos), str(lab), str(tmp_path / "v2"), {})["featureVersion"] == 2
+    assert D.read_manifest(str(tmp_path / "v2"))["featureVersion"] == 2
+    _write(pos, [dict(r, featureVersion=2 if i % 2 else 1) for i, r in enumerate(rows)])
+    with pytest.raises(ValueError, match="mixed featureVersion"):
+        D.build_dataset(str(pos), str(lab), str(tmp_path / "mixed"), {})
+
+
 def test_empty_holdout_is_error(tmp_path):
     rows = _game(0, [["B", "E5"], ["W", "D4"]])
     pos = tmp_path / "pos.jsonl"; lab = tmp_path / "lab.jsonl"

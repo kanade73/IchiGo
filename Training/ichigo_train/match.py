@@ -24,7 +24,9 @@ is decided by a real GTP engine's ``play`` response (accept/reject), never by a 
 SGF/JSONL result convention: two consecutive passes end a game; its ``result`` is the *black*
 engine's ``final_score`` (GTP area-scoring string, e.g. "B+3.5", "W+0.5", "0"). The white engine's
 ``final_score`` is also recorded and compared (``scoreDisagreement``) whenever both sides are real
-engines. Hitting ``--max-moves`` without two passes ends the game as "truncated"; a rejected
+engines. A ``genmove`` answer of ``resign`` ends the game as a counted "<winner>+Resign" (the
+resignation itself is not echoed or recorded as a move). Hitting ``--max-moves`` without two
+passes ends the game as "truncated"; a rejected
 opening/echoed move ends it as "illegal_move"; a per-command timeout ends it as "timeout"; an
 unreadable/crashed engine ends it as "crash". None of these four count toward win/draw/loss
 (docs/spec/04-tasks.md T31, mirroring SelfPlay.swift's "truncated" convention). A game ending this
@@ -190,7 +192,10 @@ class GTPClient:
             return False
 
     def genmove(self, color: str, timeout: float | None = None) -> str:
-        return self.send(f"genmove {color}", timeout=timeout).strip()
+        move = self.send(f"genmove {color}", timeout=timeout).strip()
+        # GTP vertices are case-insensitive and GNU Go answers "PASS"; the game loop compares
+        # against the canonical lowercase "pass"/"resign".
+        return move.lower() if move.lower() in ("pass", "resign") else move
 
     def time_settings(self, main_seconds: float, byo_seconds: float = 0, byo_stones: int = 0) -> None:
         self.send(f"time_settings {main_seconds} {byo_seconds} {byo_stones}")
@@ -512,6 +517,8 @@ class MatchRunner:
         if self._time_remaining is not None:
             self._time_remaining[mover_key] = max(0.0, self._time_remaining[mover_key] - elapsed)
 
+        if move == "resign":
+            return move, elapsed  # not a board move: nothing to echo, the game loop ends the game
         if self.engine_specs[other_key][0] == "gtp":
             other = self.clients[other_key]
             try:
@@ -551,6 +558,7 @@ class MatchRunner:
         a_desc = " ".join(self.engine_specs["A"][1]) if self.engine_specs["A"][0] == "gtp" else "uniform"
         b_desc = " ".join(self.engine_specs["B"][1]) if self.engine_specs["B"][0] == "gtp" else "uniform"
         comment = f"match seed={self.seed} game={game_id} opening={opening['id']} A=[{a_desc}] B=[{b_desc}]"
+        comment = comment.replace("\\", "\\\\").replace("]", "\\]")  # SGF text escaping (FF[4] §3.2)
         sgf = (
             f"(;GM[1]FF[4]SZ[{self.size}]KM[{self.komi}]RU[Chinese]"
             f"PB[{self.labels[black_key]}]PW[{self.labels[white_key]}]{re_tag}C[{comment}]" + "".join(parts) + ")\n"
@@ -624,6 +632,9 @@ class MatchRunner:
             except _GameAbort as abort:
                 incidents.append(abort.incident)
                 result, counted = abort.result, False
+                break
+            if move == "resign":
+                result, counted = f"{'W' if colour == 'B' else 'B'}+Resign", True
                 break
             moves.append(move)
             move_colours.append(colour)

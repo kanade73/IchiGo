@@ -58,6 +58,12 @@ final class LoaderRejectionTests: XCTestCase {
         assertRejected("version")
     }
 
+    func testFeatureVersion2Loads() throws {
+        XCTAssertEqual(try ModelLoader.load(directory: tmp).manifest.featureVersion, 1)
+        try mutateManifest { $0["featureVersion"] = 2 }
+        XCTAssertEqual(try ModelLoader.load(directory: tmp).manifest.featureVersion, 2)
+    }
+
     func testUnknownFeatureVersionAndRules() throws {
         try mutateManifest { $0["featureVersion"] = 7 }
         assertRejected("featureVersion")

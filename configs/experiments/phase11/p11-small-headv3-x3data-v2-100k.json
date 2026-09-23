@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "runId": "p11-small-headv3-x3data-v2-100k",
+  "data": "data/dataset-9x3-v2",
+  "out": "runs/p11-small-headv3-x3data-v2-100k",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 128,
+  "effectiveBatch": 128,
+  "maxSteps": 100000,
+  "validationInterval": 2000,
+  "checkpointInterval": 5000,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "d4",
+  "precision": "fp32",
+  "headVersion": 3,
+  "gateLearningRate": 0.1,
+  "dilations": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ]
+}

@@ -38,6 +38,7 @@ def load_checkpoint(path: str) -> LogicNet:
     ck = torch.load(path, map_location="cpu", weights_only=False)
     spec = ModelSpec(**ck["spec"])
     model = LogicNet(spec, Wiring(wiring=ck["wiring"], theta=ck["theta"], dilations=spec.dilations), heads=ck["heads"], head_version=ck.get("headVersion", 1))
+    model.feature_version = int(ck.get("featureVersion", 1))
     return model
 
 
@@ -98,7 +99,7 @@ def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: 
     prov["calibration"] = calib_prov
     files = MF.serialize_model(model.wiring_numpy(), model.hard_gates(), model.head_numpy(), model.dilations, board_sizes, prov,
                                calibration_temperature=temperature, head_version=model.head_version,
-                               gate_arity=model.gate_arity)
+                               gate_arity=model.gate_arity, feature_version=getattr(model, "feature_version", 1))
     parent = os.path.dirname(out) or "."
     os.makedirs(parent, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix=".export-", dir=parent)

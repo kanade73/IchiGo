@@ -141,6 +141,46 @@ def test_two_full_games_reach_gameover_with_analysis(tmp_path, two_engine_argv):
         server.stop()
 
 
+def test_engine_resignation_ends_the_game_and_neither_client_crashes(tmp_path, release_binary, model_path):
+    """An engine that resigns at once (every search value is below 0.99): its client must send a
+    bare `resign`, the server must score it as a resignation, and the opponent's client -- which
+    the fake server relays `play <c> resign` to -- must not forward that to its engine."""
+    argv_a = engine_argv(release_binary, model_path, visits=4) + [
+        "--resign-threshold", "0.99", "--resign-consecutive", "1", "--resign-min-move", "0",
+    ]
+    argv_b = engine_argv(release_binary, model_path, visits=4)
+    server = FakeCGOSServer(
+        accounts={"ichigo-a": "pw-a", "ichigo-b": "pw-b"}, level_ms=TEST_LEVEL_MS, max_moves=250,
+    )
+    server.start()
+    proc_a = proc_b = None
+    try:
+        cfg_a = _write_client_config(
+            tmp_path, name="a", port=server.port, username="ichigo-a", password="pw-a", argv=argv_a, max_games=1,
+        )
+        cfg_b = _write_client_config(
+            tmp_path, name="b", port=server.port, username="ichigo-b", password="pw-b", argv=argv_b, max_games=1,
+        )
+        proc_a = spawn_client(cfg_a, games=1)
+        proc_b = spawn_client(cfg_b, games=1)
+
+        (game,) = server.wait_for_completed_games(1, timeout=GAME_TIMEOUT_SECONDS)
+        winner = "B" if game.black == "ichigo-b" else "W"
+        assert game.result == f"{winner}+Resign", game.result
+        resign_records = [m for m in game.moves if m.coord.lower() == "resign"]
+        assert len(resign_records) == 1
+        assert resign_records[0].analysis is None
+
+        assert _wait_exit(proc_a, timeout=30) == 0
+        assert _wait_exit(proc_b, timeout=30) == 0
+        proc_a = proc_b = None
+    finally:
+        for p in (proc_a, proc_b):
+            if p is not None:
+                _terminate(p)
+        server.stop()
+
+
 def test_disconnect_then_setup_replay_resumes_without_duplicated_moves(tmp_path, two_engine_argv):
     """docs/spec/04-tasks.md T30 test plan: "a mid-game disconnect + setup replay resumes without
     duplicated moves"."""

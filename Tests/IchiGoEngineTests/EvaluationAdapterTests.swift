@@ -22,7 +22,31 @@ struct FakeBackend: LogicBackend {
     }
 }
 
+/// Records the spatial planes it is given (Tests only).
+final class RecordingBackend: LogicBackend, @unchecked Sendable {
+    let name = "recording"
+    private let lock = NSLock()
+    private var seen: [[UInt8]] = []
+    var lastSpatial: [UInt8]? { lock.withLock { seen.last } }
+    func evaluate(features: FeatureBatch) async throws -> RawBatch {
+        lock.withLock { seen.append(features.spatial) }
+        return try await FakeBackend().evaluate(features: features)
+    }
+}
+
 final class EvaluationAdapterTests: XCTestCase {
+    func testEvaluatorEncodesWithTheModelsFeatureVersion() async throws {
+        let g = try GameState(boardSize: 9, komi: 7)
+        for (x, y) in [(0, 0), (4, 4), (2, 2), (1, 0), (6, 6)] { try g.play(g.toMove, .point(x: x, y: y)) }
+        for version in [1, 2] {
+            let backend = RecordingBackend()
+            let caps = ModelCapabilities(boardSizes: [9], rulesID: IchiGoRules.rulesID, hasOwnership: true, featureVersion: version)
+            let ev = LogicEvaluator(capabilities: caps, modelHash: "fake", backend: backend)
+            _ = try await ev.evaluate([g.snapshot()])
+            XCTAssertEqual(backend.lastSpatial, try FeatureEncoder.encode([g.snapshot()], featureVersion: version).spatial, "featureVersion \(version)")
+        }
+    }
+
     private func eval(expected e: Float, draw: Float = 0, score: Float = 3, own: Float = 0.25, P: Int = 81) -> LogicEvaluation {
         LogicEvaluation(policy: [Float](repeating: 1 / Float(P + 1), count: P + 1), winDrawLoss: [e - draw / 2, draw, 1 - e - draw / 2],
                         expectedResult: e, scoreMean: score, ownership: [Float](repeating: own, count: P))

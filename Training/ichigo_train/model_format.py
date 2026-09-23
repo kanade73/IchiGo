@@ -27,6 +27,8 @@ from .wiring import INPUT_CHANNELS, validate_wiring
 FORMAT = "ichigo.logic"
 VERSION = 1
 FEATURE_VERSION = 1
+# docs/spec/01-network.md §1: both versions share the 32-channel layout; only the encoder differs.
+SUPPORTED_FEATURE_VERSIONS = (1, 2)
 RULES_ID = "cgos-area-psk-v1"
 GATE_ENCODING = "truth-table-lsb-2a-plus-b"
 LUT4_GATE_ENCODING = "lut4-msb-first"
@@ -79,6 +81,7 @@ def build_manifest(
     calibration_temperature: float = 1.0,
     head_version: int = HEAD_VERSION,
     gate_arity: int = 2,
+    feature_version: int = FEATURE_VERSION,
 ) -> dict:
     file_names = file_names_for_arity(gate_arity)
     gates_name = file_names[1]
@@ -86,7 +89,7 @@ def build_manifest(
     return {
         "format": FORMAT,
         "version": VERSION,
-        "featureVersion": FEATURE_VERSION,
+        "featureVersion": int(feature_version),
         "headVersion": int(head_version),
         "gateArity": int(gate_arity),
         "boardSizes": list(board_sizes),
@@ -131,10 +134,12 @@ def pack_heads(heads: dict[str, np.ndarray], channels: int, head_version: int = 
 
 def serialize_model(wiring: np.ndarray, gates: np.ndarray, heads: dict[str, np.ndarray], dilations: list[int],
                     board_sizes: list[int], training_provenance: dict, calibration_temperature: float = 1.0,
-                    head_version: int = HEAD_VERSION, gate_arity: int = 2) -> dict[str, bytes]:
+                    head_version: int = HEAD_VERSION, gate_arity: int = 2, feature_version: int = FEATURE_VERSION) -> dict[str, bytes]:
     """Returns ``{filename: bytes}`` for the four files, after validating everything."""
     if gate_arity not in (2, 4):
         raise ModelFormatError("gate_arity must be 2 or 4")
+    if feature_version not in SUPPORTED_FEATURE_VERSIONS:
+        raise ModelFormatError(f"unsupported featureVersion {feature_version}")
     wiring = np.ascontiguousarray(np.asarray(wiring, dtype="<i4"))
     gates_dtype = np.dtype("<u2") if gate_arity == 4 else np.dtype("u1")
     gates = np.ascontiguousarray(np.asarray(gates, dtype=gates_dtype))
@@ -152,7 +157,7 @@ def serialize_model(wiring: np.ndarray, gates: np.ndarray, heads: dict[str, np.n
         board_sizes=board_sizes, channels=C, dilations=dilations, wiring_bytes=wiring_bytes,
         gates_bytes=gates_bytes, heads_bytes=heads_bytes, head_tensors=entries,
         training_provenance=training_provenance, calibration_temperature=calibration_temperature, head_version=head_version,
-        gate_arity=gate_arity,
+        gate_arity=gate_arity, feature_version=feature_version,
     )
     _reject_nonfinite(manifest)
     manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
@@ -260,7 +265,7 @@ def validate_manifest(m: dict) -> None:
         raise ModelFormatError(f"unknown format {m['format']!r}")
     if m["version"] != VERSION:
         raise ModelFormatError(f"unsupported version {m['version']}")
-    if m["featureVersion"] != FEATURE_VERSION:
+    if m["featureVersion"] not in SUPPORTED_FEATURE_VERSIONS:
         raise ModelFormatError(f"unsupported featureVersion {m['featureVersion']}")
     if m["headVersion"] not in SUPPORTED_HEAD_VERSIONS:
         raise ModelFormatError(f"unsupported headVersion {m['headVersion']}")
