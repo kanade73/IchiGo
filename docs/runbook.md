@@ -130,6 +130,7 @@ cd Training && uv run pytest -q ../Tests/cgos
    | `password_file` | **相対パス**（config ファイル自身のディレクトリからの相対）。絶対パスは起動時に拒否される。パスワード本文だけを書いたファイルを、config と同じ gitignore された場所（例: 同じ `runs/cgos/<name>/` の下）に置く。`configs/` の下には置かない |
    | `board_size` | `9`（初回出場は 9 路。19 路は T27/M2c 以降） |
    | `engine_argv` | release バイナリ＋実際に使うモデルへのフルパス。JSON 配列で書く（シェル文字列にしない。パス中の空白を naive split しないため）。例: `["/abs/path/dist/ichigo-<version>-<arch>/ichigo", "gtp", "--model-9", "/abs/path/dist/ichigo-<version>-<arch>/models/<name>.ichigo", "--backend", "auto"]`。`Scripts/release/build.sh` が作る dist ディレクトリをそのまま指す運用を推奨（(b) の parity/baseline を通したモデルと、MANIFEST.json に hash が残るバイナリが一体で揃う） |
+   | （推奨フラグ, 2026-09-23） | `engine_argv` の末尾に `"--backend", "cpu-packed-mt", "--leaf-batch", "64", "--pipeline", "--resign-threshold", "0.03"` を足す。CPU 全コアで推論して GPU を使わない（従来既定の metal・バッチ 8 に持ち時間をそろえて 22-3-15）。投了は探索勝率 < 0.03 が 3 手続いたとき（既存ログ 1,754 局で誤投了 0）。`--leaf-batch` を 256 などに上げると探索の質が崩れる（`docs/implementation-status.md` 2026-09-23 午後） |
    | `analysis` | `true`（`kata-genmove_analyze` を使い、CGOS の analysis 拡張へ送る） |
    | `state_dir` / `log_dir` | 本番専用の新しいディレクトリ（RinGo の CGOS state と混在させない。他の CGOS client インスタンスとも共有しない） |
    | `max_games` | 通常は `null`（`--games N` を CLI 引数で指定する運用を推奨。config を書き換えずに済む） |

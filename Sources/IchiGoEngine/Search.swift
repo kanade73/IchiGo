@@ -34,6 +34,14 @@ public struct SearchSettings: Sendable {
     /// separately — so a whole search's playout sequence is reproducible from its
     /// `SearchSettings` alone, given a deterministic evaluator. Unused by any other value source.
     public var rolloutRNGSeed: UInt64 = 0x726F_6C6C_6F75_74
+    /// Overlap leaf selection/preparation with evaluation (`Search.runPipelined`): one batch is
+    /// always in the evaluator while the next is built. Changes the tree (like a larger batch);
+    /// ignored for `ValueSource.rollout`, which stays sequential.
+    public var pipelinedEvaluation: Bool = false
+    /// 0 = fixed `leafBatch`. Otherwise batches grow with the tree: root visits / this, at least
+    /// 8 and at most `leafBatch` (`Search.batchLimit`). A batch of 256 (512 in flight when
+    /// pipelined) in a 3,000-visit tree lost 3-37 to batch 8 at equal visits (2026-09-23).
+    public var batchGrowthDivisor: Int = 0
 
     public init() {}
 }
@@ -84,9 +92,18 @@ public struct SearchResult: Sendable, Equatable {
 }
 
 final class SearchNode {
-    let state: GameState
+    /// nil until `materialize()` for a child made by `descend`: its position (copy + play) and
+    /// evaluation snapshot are built once the whole leaf batch has been selected
+    /// (`Search.prepareLeaves`), which lets the pipelined loop build a batch while the previous
+    /// one is being evaluated.
+    private var stateStorage: GameState?
+    private var pending: (parent: GameState, move: MoveCoord)?
+    var state: GameState { stateStorage! }
+    var isMaterialized: Bool { stateStorage != nil }
     let toMove: Player
-    let terminal: (value: Float, score: Float)?   // white perspective exact outcome
+    private(set) var terminal: (value: Float, score: Float)?   // white perspective exact outcome; known once materialized
+    /// Snapshot built by `materialize` for this leaf's evaluation; `evaluateBatch` takes it.
+    var leafSnapshot: PositionSnapshot?
     var evaluated = false
     var nnWhiteValue: Double = 0         // white expected*2-1 from the NN
     var nnWhiteScore: Double = 0
@@ -108,9 +125,28 @@ final class SearchNode {
     }
 
     init(state: GameState) {
-        self.state = state
+        stateStorage = state
         toMove = state.toMove
         if let o = state.exactWhiteOutcome { terminal = (o.value, o.whiteMinusBlack) } else { terminal = nil }
+    }
+
+    /// Unmaterialized child of `parent` after `move` (the side to move always alternates, passes
+    /// included).
+    init(parent: GameState, move: MoveCoord) {
+        pending = (parent, move)
+        toMove = parent.toMove.opponent
+        terminal = nil
+    }
+
+    /// Builds the position (and, for a non-terminal leaf, its evaluation snapshot without the
+    /// SHA-256 fingerprint, which only tree reuse needs and computes on demand). Idempotent.
+    func materialize() {
+        guard stateStorage == nil, let p = pending else { return }
+        let s = p.parent.copy()
+        try! s.play(s.toMove, p.move, assumeLegal: true)  // moves come from the parent's legal mask
+        stateStorage = s
+        pending = nil
+        if let o = s.exactWhiteOutcome { terminal = (o.value, o.whiteMinusBlack) } else { leafSnapshot = s.snapshot(includeFingerprint: false) }
     }
 
     var meanWhiteValue: Double { visits > 0 ? whiteValueSum / Double(visits) : nnWhiteValue }
@@ -168,6 +204,12 @@ public actor Search {
     public func rootRecord() -> GameRecord { root.state.record }
     public func rootVisits() -> Int { root.visits }
     public func nodeCountForTests() -> Int { nodeCount }
+    /// Sum of outstanding edge reservations (virtual losses) over the tree; 0 whenever no search
+    /// is running.
+    public func pendingReservationsForTests() -> Int { reservations(in: root) }
+    private func reservations(in n: SearchNode) -> Int {
+        n.edges.reduce(0) { $0 + $1.reservations + ($1.child.map { reservations(in: $0) } ?? 0) }
+    }
     public func currentGeneration() -> Int { generation }
     /// `ValueSource.rollout` playout accounting for the most recent `run(visits:deadline:)` call
     /// (reset at its start). All zero when `valueSource` isn't `.rollout`.
@@ -184,7 +226,7 @@ public actor Search {
         try next.play(next.toMove, move, assumeLegal: true)
         generation += 1
         if settings.treeReuse, let edge = root.edges.first(where: { $0.move == move }), let child = edge.child,
-           (child.stateFingerprint ?? child.state.fingerprintValue()) == next.fingerprintValue() {
+           child.isMaterialized, (child.stateFingerprint ?? child.state.fingerprintValue()) == next.fingerprintValue() {
             root = child
             nodeCount = countNodes(root)
             return
@@ -233,6 +275,10 @@ public actor Search {
             try await evaluateBatch([SearchPath(nodes: [root], edgeIndices: [])], generation: gen)
             guard gen == generation else { throw SearchError(message: "search invalidated") }
         }
+        if settings.pipelinedEvaluation, !settings.valueSource.isRollout {
+            try await runPipelined(visits: target, deadline: deadline, generation: gen)
+            return try result(chosen: chooseMove())
+        }
         while root.visits < target, !Task.isCancelled {
             if let deadline {
                 // `clock.now()` is itself a suspension point on this actor (any `await` is), so a
@@ -242,7 +288,7 @@ public actor Search {
                 guard gen == generation else { throw SearchError(message: "search invalidated") }
                 if now + TimeManager.stopMargin(recentBatchDurations: recentBatchDurations) >= deadline { break }
             }
-            let batch = collectBatch(limit: min(settings.leafBatch, target - root.visits))
+            let batch = collectBatch(limit: min(batchLimit(), target - root.visits))
             if batch.isEmpty { break }
             let batchStart = deadline != nil ? await clock.now() : nil
             guard gen == generation else { releaseAll(batch); throw SearchError(message: "search invalidated") }
@@ -256,6 +302,88 @@ public actor Search {
             guard gen == generation else { throw SearchError(message: "search invalidated") }
         }
         return try result(chosen: chooseMove())
+    }
+
+    /// `settings.pipelinedEvaluation`: keeps one leaf batch in the evaluator (on its own task,
+    /// off this actor) while the next batch is selected and prepared here, so tree work and the
+    /// multi-core evaluation overlap. Batch k+1 is selected before batch k is backed up — it sees
+    /// batch k's leaves only as reservations (virtual loss), exactly as leaves inside one batch
+    /// see each other — so the tree differs from the sequential loop's. Same contract as `run`
+    /// otherwise: stale generations release every reservation and throw, and the deadline only
+    /// stops new batches (the one in flight is always collected).
+    private func runPipelined(visits target: Int, deadline: Double?, generation gen: Int) async throws {
+        struct InFlight {
+            let batch: [SearchPath]
+            let need: [SearchPath]
+            let snaps: [PositionSnapshot]
+            let task: Task<[LogicEvaluation], Error>?
+            let start: Double?
+        }
+        var inFlight: InFlight?
+        while true {
+            var next: [SearchPath] = []
+            let pending = inFlight?.batch.count ?? 0
+            var issue = root.visits + pending < target && !Task.isCancelled
+            if issue, let deadline {
+                let now = await clock.now()
+                guard gen == generation else {
+                    if let f = inFlight { f.task?.cancel(); releaseAll(f.batch) }
+                    throw SearchError(message: "search invalidated")
+                }
+                if now + TimeManager.stopMargin(recentBatchDurations: recentBatchDurations) >= deadline { issue = false }
+            }
+            if issue { next = collectBatch(limit: min(batchLimit(), target - root.visits - pending)) }
+            if let f = inFlight {
+                inFlight = nil
+                var evals: [LogicEvaluation] = []
+                if let task = f.task {
+                    do { evals = try await task.value } catch { releaseAll(f.batch); releaseAll(next); throw error }
+                }
+                guard gen == generation else { releaseAll(f.batch); releaseAll(next); throw SearchError(message: "search invalidated") }
+                do { try applyEvaluations(f.batch, need: f.need, snaps: f.snaps, evals: evals) } catch { releaseAll(next); throw error }
+                if let start = f.start {
+                    recordBatchDuration(await clock.now() - start)
+                    guard gen == generation else { releaseAll(next); throw SearchError(message: "search invalidated") }
+                }
+            }
+            if next.isEmpty { break }
+            let need = next.filter { $0.nodes.last!.terminal == nil && !$0.nodes.last!.evaluated }
+            let snaps = need.map { path -> PositionSnapshot in
+                let leaf = path.nodes.last!
+                defer { leaf.leafSnapshot = nil }
+                return leaf.leafSnapshot ?? leaf.state.snapshot()
+            }
+            let start = deadline != nil ? await clock.now() : nil
+            guard gen == generation else { releaseAll(next); throw SearchError(message: "search invalidated") }
+            let evaluator = evaluator
+            let task: Task<[LogicEvaluation], Error>? = need.isEmpty ? nil : Task.detached { try await evaluator.evaluate(snaps) }
+            inFlight = InFlight(batch: next, need: need, snaps: snaps, task: task, start: start)
+        }
+    }
+
+    /// Expands the batch's evaluated leaves (network value only; rollout runs sequentially) and
+    /// backs up every path.
+    private func applyEvaluations(_ batch: [SearchPath], need: [SearchPath], snaps: [PositionSnapshot], evals: [LogicEvaluation]) throws {
+        guard evals.count == need.count else {
+            releaseAll(batch)
+            throw SearchError(message: "evaluator returned \(evals.count) results for \(need.count) leaves")
+        }
+        for (path, (snap, e)) in zip(need, zip(snaps, evals)) where !path.nodes.last!.evaluated {
+            expand(path.nodes.last!, snapshot: snap, evaluation: e)
+        }
+        for path in batch {
+            let leaf = path.nodes.last!
+            let (v, s): (Double, Double) = leaf.terminal.map { (Double($0.value), Double($0.score)) } ?? (leaf.nnWhiteValue, leaf.nnWhiteScore)
+            backup(path, whiteValue: v, whiteScore: s)
+        }
+    }
+
+    /// Leaves per batch: `settings.leafBatch`, or with `batchGrowthDivisor` > 0 the root's visits
+    /// divided by it, clamped to [min(8, leafBatch), leafBatch], so that leaves awaiting
+    /// evaluation (virtual losses) stay a small fraction of the tree.
+    private func batchLimit() -> Int {
+        guard settings.batchGrowthDivisor > 0 else { return settings.leafBatch }
+        return min(settings.leafBatch, max(min(8, settings.leafBatch), root.visits / settings.batchGrowthDivisor))
     }
 
     private func recordBatchDuration(_ d: Double) {
@@ -300,9 +428,23 @@ public actor Search {
         while paths.count < limit {
             guard let path = descend() else { break }
             paths.append(path)
-            if path.nodes.last?.terminal != nil { continue }
         }
+        prepareLeaves(paths)
         return paths
+    }
+
+    /// Materializes every new leaf of the batch (position + snapshot) after the whole batch has
+    /// been selected. Each leaf only reads its parent's state, so this cannot change the search.
+    /// (Doing it with `concurrentPerform` was measured slower than serial on an M5: the Core
+    /// board code contends on shared reference counts, 2026-09-23.)
+    private func prepareLeaves(_ paths: [SearchPath]) {
+        var seen = Set<ObjectIdentifier>()
+        var fresh: [SearchNode] = []
+        for p in paths {
+            let leaf = p.nodes.last!
+            if !leaf.isMaterialized, seen.insert(ObjectIdentifier(leaf)).inserted { fresh.append(leaf) }
+        }
+        for leaf in fresh { leaf.materialize() }
     }
 
     /// Selects a path from the root; reserves every traversed edge. Expands one new node or
@@ -326,9 +468,7 @@ public actor Search {
                 releasePath(path)
                 return nil
             }
-            let s = node.state.copy()
-            try! s.play(s.toMove, node.edges[idx].move, assumeLegal: true)  // moves come from the legal mask
-            let child = SearchNode(state: s)
+            let child = SearchNode(parent: node.state, move: node.edges[idx].move)  // built in prepareLeaves
             node.edges[idx].child = child
             nodeCount += 1
             path.edgeIndices.append(idx)
@@ -380,7 +520,11 @@ public actor Search {
     private func evaluateBatch(_ batch: [SearchPath], generation gen: Int) async throws {
         let need = batch.filter { $0.nodes.last!.terminal == nil && !$0.nodes.last!.evaluated }
         if !need.isEmpty {
-            let snaps = need.map { $0.nodes.last!.state.snapshot() }
+            let snaps = need.map { path -> PositionSnapshot in
+                let leaf = path.nodes.last!
+                defer { leaf.leafSnapshot = nil }
+                return leaf.leafSnapshot ?? leaf.state.snapshot()
+            }
             let evals = try await evaluator.evaluate(snaps)
             guard gen == generation else {
                 // Late result from a previous generation (`makeMove`/`reset` ran while this
@@ -434,7 +578,7 @@ public actor Search {
         node.nnWhiteScore = Double(w.whiteScoreMean)
         node.rawExpected = Double(e.expectedResult)
         node.rawWDL = e.winDrawLoss
-        node.stateFingerprint = snapshot.fingerprint
+        node.stateFingerprint = snapshot.fingerprint.isEmpty ? nil : snapshot.fingerprint  // else computed by makeMove if needed
         let S = snapshot.boardSize
         var edges: [SearchNode.Edge] = []
         for i in 0 ... (S * S) where snapshot.legal[i] == 1 {

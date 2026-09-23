@@ -1,6 +1,36 @@
-# IchiGo 進捗総括（2026-09-08 〜 2026-09-10 早朝）
+# IchiGo 進捗総括（2026-09-08 〜 2026-09-23）
 
-時系列の作業ログは [implementation-status.md](implementation-status.md)。本書は「何ができて、何が分かり、何を決めたか」をまとめたもの。
+時系列の作業ログは [implementation-status.md](implementation-status.md)。本書は「何ができて、何が分かり、何を決めたか」をまとめたもの。§0 が最新の要約、§1 以降は 09-10 時点の記録に追記している。
+
+## 0. 2026-09-23 時点のまとめ
+
+### 9 路はひとまず動く
+
+- 公開 CGOS（yss-aya.com:6809、5 分切れ負け、komi 7）に `RinGo-LGN` で出場した（2 局、相手は 2,900 前後の KataGo 系で 2 敗）。client・release パッケージ・supervisor（`runs/cgos/<name>/run.sh`、gitignore）・投了（`--resign-threshold`）まで実運用で通っている。
+- 外部基準: gnugo 3.8 level 10（`--capture-all-dead`）と 800 visits で 10-0-10。CGOS の Gnugo アンカーは 1800 なので、その近辺。
+- 対局用の推奨設定: `ichigo gtp --model-9 <model> --backend cpu-packed-mt --leaf-batch 64 --pipeline --resign-threshold 0.03`（GPU を使わない。理由は下の「読みの量より知識」）。モデルは死活ベンチ最良の `p11-wide512-headv3-x3data-dagger-v2-200k`（featureVersion 2）が候補だが、チャンピオン `p4-local-wide512-200k` との対局検証はまだ。
+
+### 強さ（品質）について分かったこと
+
+1. **弱点は死活。** CGOS の 2 敗はどちらも「教師（KataGo）は死と見る石を生きと読んだ」（1 局目は policy 1 位の正着 B8 を、value/ownership の誤認で探索が捨てた）。自分の対局 728 局から作った死活ベンチ（`Scripts/death_bench.py`、6,526 局面、対局単位で学習と分離）では、既存モデルは教師上の死石の 29〜35% しか死と見ず、生き石は 97〜99% 正しい＝「生き」側への偏り。幅・head v3・3 倍データは policy/value を改善してきたが、この数字はほとんど動かさなかった。
+2. **知識を足すと効いた。** 2 入力ゲートは連に沿って情報を集められない、という仮説に沿って (a) featureVersion 2（シチョウ、Benson の pass-alive、呼吸点 4 以上、眼領域、二眼候補を、履歴 t=3〜7 の 10 チャンネルと置き換え。32ch の形は同じ）、(b) 自分の対局の局面を CUDA 教師でラベルして学習に足す（DAgger 型、1 回目は 4.3 万局面）を入れた。どちらも効き、足し算になる:
+
+   | モデル（head v3） | 死石の検出率 | 丸ごと見逃した局面 | value MAE（ベンチ） |
+   |---|---|---|---|
+   | small v1（100k） | 0.290 | 922 / 3,382 | 0.264 |
+   | small v2 + 自分の対局 | **0.456** | 673 | 0.220 |
+   | wide512 v1（200k） | 0.346 | 772 | 0.252 |
+   | wide512 v2 | 0.440 | 665 | 0.211 |
+   | **wide512 v2 + 自分の対局** | **0.462** | **588** | **0.191** |
+
+   small 同士の対局（各 800 visits、40 局）: v2 + 自分の対局 vs v1 = 29-3-8（0.76、CI [0.66, 0.86]）。wide512 v2 は同じ検証局面で hard top1 0.385 → 0.403、expected MAE 0.259 → 0.238 と通常指標も改善した。学習前の線形プローブ（ownership に v2 平面を足すと死石判別の AUC 0.825 → 0.909）が良い予告になった。
+3. **読みの量より知識で頭打ち。** CPU 多コア推論（`cpu-packed-mt`）、大きなバッチ、評価と準備の重ね合わせ（`--pipeline`）で探索は最大 1,100 → 23,700 visits/秒になったが、評価待ち 512 葉では仮想損失で探索が崩れ、同じ visits でバッチ 8 に 3-37。質を落とさないバッチ 64 + pipeline（13,300 visits/秒）で持ち時間をそろえると従来既定に 22-3-15（0.59、CI [0.46, 0.71]）、3.4 倍読んで +60 Elo 程度。今の評価が当てにならない局面では、読みを増やしてもあまり伸びない。
+4. **RinGo の補助としての LGN は見込みが薄い。** RinGo champion（b20c256）と同じ Mac で、LGN を CPU 8 コアで回しても RinGo の GPU 評価は 3〜7% しか落ちない（実探索は木の処理が CPU なので約 15% 落ちる）。ただし品質では、RinGo の深い探索の最善手が上位 8 手に入る率が RinGo 生ネット 0.98 に対し LGN 0.85〜0.87、RinGo の誤りの予測に LGN を足しても AUC は増えない（0.741 → 0.738）。「難所の検出」「ルートの篩い」は不採用。強さでは RinGo（CGF 2026 9 路 7 位）との差は大きいまま。
+
+### 次の手
+
+- 自分の対局の教師化を繰り返す（新モデルで対局 → CUDA 教師 → 再学習）。連単位の OR プーリング層（連に沿った集約を正確な演算で与える）、C=2048 + v2 + 自分の対局、恒等初期化の割合を上げる実験。
+- 19 路（UEC 杯 2026-11-28/29、19 路・30 分切れ負け・日本ルール・コミ 6.5・400 手）に IchiGo で出る方針。KataGo 公開学習棋譜（katagoarchive.org、1 日約 10 万局の 19 路）から 3 万局を選び、`ichigo features --size 19 --feature-version 2 --sample-per-game 15` で約 45 万局面を抽出中。教師は kata1-b18c384nbt、ラベルのルール（日本ルールにするか）は決定待ち。
 
 ## 1. 到達点
 
@@ -9,8 +39,8 @@
 | M0 数値基盤 | 完了 | 16 ゲート、32ch 特徴、`.ichigo` 形式、Python hard ↔ Swift scalar の全層 bit 一致（`make parity-cpu`） |
 | M1 学習する 9 路 | 完了 | 16 局面過学習検収（3 seed 合格）、KataGo 教師ラベル 96k 局面、prefix 離散化、export、uniform baseline 100 局全勝 |
 | M2a 9 路 CGOS 準備 | 完了 | 時計・watchdog、Metal/packed 推論、ベンチ、DDP 1/2/4 GPU 検収、校正、CGOS ローカル統合（fake server）、対局 runner、release パッケージ（`make release-check` PASS） |
-| M2b 公開 CGOS 出場 | 未着手 | アカウント・接続先の設定待ち（`docs/runbook.md` 実 CGOS 節） |
-| M2c 19 路 | 未着手 | コードは両サイズ対応、学習は 9 路のみ |
+| M2b 公開 CGOS 出場 | 出場済み（09-23） | `RinGo-LGN` で 2 局。投了対応、supervisor 運用（§0） |
+| M2c 19 路 | 着手（09-23） | データ準備中（§0 次の手）。コードは両サイズ対応 |
 
 現チャンピオン候補: `models/p4-local-wide512-200k.ichigo`（512ch × 8 層、局所配線、gateLR 0.1、200k step）。hard policy top1 0.390、expected MAE 0.291。旧モデル（small gl10）に 63-6-31（paired 95% CI [0.57, 0.745]）。
 

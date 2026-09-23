@@ -121,3 +121,31 @@ final class PackedCPUBackendTests: XCTestCase {
         }
     }
 }
+
+/// `cpu-packed-mt` only changes which thread evaluates each position. Logic layers are exact
+/// either way; head floats can differ in the last bits because Accelerate blocks the head matmul
+/// differently for different batch sizes, so heads are held to the same tolerance as packed vs
+/// scalar (docs/spec/05-validation.md §3). Chunkings that divide the batch evenly, unevenly and
+/// not at all.
+final class ParallelPackedCPUBackendTests: XCTestCase {
+    func testChunkedEvaluationMatchesSingleBackend() async throws {
+        for fixture in ["tiny-9", "tiny-9-headv3"] {
+            let c = try ParityCase.load(fixture)
+            let single = PackedCPUBackend(model: c.model)
+            for (workers, minChunk) in [(4, 16), (3, 1), (1, 16)] {
+                let mt = ParallelPackedCPUBackend(model: c.model, workers: workers, minChunk: minChunk)
+                for b in [0, 1, 7, 33, 64] {
+                    let f = try syntheticFeatures(boardSize: c.boardSize, batch: b, seed: UInt64(0x3417_0000 + b))
+                    let got = try await mt.evaluate(features: f)
+                    let ref = try single.evaluateSync(features: f)
+                    let label = "\(fixture) workers=\(workers) minChunk=\(minChunk) batch=\(b)"
+                    XCTAssertEqual(got.batch, b, label)
+                    assertHeadClose(got.policyLogits, ref.policyLogits, label + " policyLogits")
+                    assertHeadClose(got.wdlLogits, ref.wdlLogits, label + " wdlLogits")
+                    assertHeadClose(got.scoreMean, ref.scoreMean, label + " scoreMean")
+                    assertHeadClose(got.ownership, ref.ownership, label + " ownership")
+                }
+            }
+        }
+    }
+}

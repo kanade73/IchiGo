@@ -60,6 +60,15 @@ public struct FeatureBatch: Sendable, Equatable {
         self.global = global
         self.legal = legal
     }
+
+    /// For slices of an already validated batch (`slice(_:)`); callers guarantee the invariants.
+    init(unchecked boardSize: Int, batch: Int, spatial: [UInt8], global: [Float], legal: [UInt8]) {
+        self.boardSize = boardSize
+        self.batch = batch
+        self.spatial = spatial
+        self.global = global
+        self.legal = legal
+    }
 }
 
 /// Raw head outputs, to-move perspective, same order as the input batch.

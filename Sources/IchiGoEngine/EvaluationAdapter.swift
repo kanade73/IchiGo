@@ -67,6 +67,7 @@ public struct ValueSource: Sendable, Equatable {
 
     public var mode: Mode
     public init(mode: Mode = .network) { self.mode = mode }
+    public var isRollout: Bool { if case .rollout = mode { true } else { false } }
 
     public static let network = ValueSource(mode: .network)
     public static func ownership(k: Float = 6, b: Float = 1) -> ValueSource { ValueSource(mode: .ownership(k: k, b: b)) }

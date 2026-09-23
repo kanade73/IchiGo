@@ -68,6 +68,8 @@ public struct PositionSnapshot: Sendable, Equatable {
     /// Whether the game is over on the board (two consecutive passes).
     public let isGameFinished: Bool
     /// Fingerprint of the complete state (board, to-move, ko, superko bans, pass state, komi).
+    /// Empty when taken with `snapshot(includeFingerprint: false)` (search leaves: tree reuse
+    /// computes it on demand from the state, and only for the child actually played).
     public let fingerprint: String
 
     public var current: StoneLayout { layouts[0] }
@@ -265,7 +267,7 @@ public final class GameState {
         return value
     }
 
-    public func snapshot() -> PositionSnapshot {
+    public func snapshot(includeFingerprint: Bool = true) -> PositionSnapshot {
         let S = boardSize
         let pla = toMove
         var legal = [UInt8](repeating: 0, count: S * S + 1)
@@ -290,7 +292,7 @@ public final class GameState {
         return PositionSnapshot(
             boardSize: S, toMove: pla, komi: komi, moveNumber: moves.count, consecutivePasses: consecutivePasses,
             layouts: hist, recentMoves: Array(recent), liberties: libs, koPoint: ko, legal: legal,
-            isGameFinished: history.isGameFinished, fingerprint: fingerprintValue()
+            isGameFinished: history.isGameFinished, fingerprint: includeFingerprint ? fingerprintValue() : ""
         )
     }
 

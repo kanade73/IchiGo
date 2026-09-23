@@ -59,36 +59,44 @@ usage: ichigo <command> [options]
 commands:
   doctor                         CPU/OS/Metal capability report as JSON (no serial numbers)
   inspect --model PATH           validate a .ichigo directory, print manifest, shapes and hashes
-  eval --model PATH --position FILE [--backend cpu|cpu-packed|metal|metal-packed|auto] [--dump-layers FILE]
+  eval --model PATH --position FILE [--backend cpu|cpu-packed|cpu-packed-mt|metal|metal-packed|auto] [--dump-layers FILE]
                                  evaluate one position JSON (spatial/global/legal arrays) and print
                                  raw outputs and the post-processed evaluation as JSON; --dump-layers
                                  writes every logic layer's bits ([L,S,S,C] uint8) for parity checks
-  eval-batch --model PATH --positions FILE.jsonl --out FILE.jsonl [--backend ...] [--batch 64]
+  eval-batch --model PATH --positions FILE.jsonl --out FILE.jsonl [--backend ...] [--batch 64] [--policy]
                                  evaluate every row of an `ichigo features` JSONL and write one JSONL
                                  row per position: positionId, expectedResult, winDrawLoss,
-                                 scoreMean, ownership (side to move). Rows must carry the model's
+                                 scoreMean, ownership (side to move), and with --policy the masked
+                                 policy (S*S+1, pass last). Rows must carry the model's
                                  featureVersion (absent = 1)
-  gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|cpu-packed|metal|metal-packed|auto] [--visits N]
+  gtp [--model-9 PATH] [--model-19 PATH] [--backend cpu|cpu-packed|cpu-packed-mt|metal|metal-packed|auto] [--visits N]
       [--value-source network|ownership|blend|rollout] [--value-blend W] [--value-k K] [--value-b B]
       [--rollout-count N] [--rollout-max-moves M]
       [--resign-threshold T] [--resign-consecutive N] [--resign-min-move M]
+      [--leaf-batch N] [--cpu-workers N] [--pipeline] [--batch-growth D] [--max-nodes N]
                                  GTP engine on stdin/stdout (logs on stderr); at least one model.
                                  Resignation is off unless --resign-threshold is given: genmove then
                                  answers `resign` once the search value (side to move, draw = 0.5)
                                  is below T on N own genmoves in a row (default 3), counting only
-                                 moves from M on (default a quarter of the board area, 20 on 9x9)
+                                 moves from M on (default a quarter of the board area, 20 on 9x9).
+                                 --leaf-batch sets how many leaves one evaluator call carries
+                                 (default 8); --pipeline builds the next batch while the current
+                                 one is evaluated; --batch-growth D grows batches with the tree
+                                 (root visits / D, from 8 up to --leaf-batch); --max-nodes caps the tree (default 100000, about
+                                 30 KB per node on 9x9)
   selfplay --model PATH --games N --out DIR --seed N [--visits N] [--size 9|19]
-           [--backend cpu|cpu-packed|metal|metal-packed|auto]
+           [--backend cpu|cpu-packed|cpu-packed-mt|metal|metal-packed|auto]
            [--value-source network|ownership|blend|rollout] [--value-blend W] [--value-k K] [--value-b B]
            [--rollout-count N] [--rollout-max-moves M]
                                  self-play with the model on both sides; writes SGF + root visit
                                  targets (JSONL) per game
   features --sgf-dir DIR --out FILE --size 9|19 [--rules cgos-area-psk-v1] [--komi K]
-           [--max-games N] [--min-turn T] [--feature-version 1|2]
+           [--max-games N] [--min-turn T] [--feature-version 1|2] [--sample-per-game N]
                                  replay SGF main lines and stream one JSONL row per position;
                                  rejected games go to <out>.rejects.jsonl with file name and move.
                                  --feature-version 2 swaps history t=3..7 for group planes
-                                 (docs/spec/01-network.md §1); positionId is the same in both
+                                 (docs/spec/01-network.md §1); positionId is the same in both.
+                                 --sample-per-game keeps N turns per game (fixed by the gameId)
   benchmark --model PATH --positions FILE --batches 1,8,32 --out FILE.json
             [--backends cpu,cpu-packed,metal,metal-packed] [--warmup 50] [--iters 200]
                                  docs/spec/05-validation.md §7 Mac benchmark: warmup then measure
@@ -99,7 +107,8 @@ commands:
                                  (fastest measured backend per batch; docs/spec/04-tasks.md T25)
 
 backends: cpu (byte gates + explicit-loop CPU heads, the golden oracle), cpu-packed (batch-packed
-CPU gates + accelerated CPU heads), metal (byte gates on GPU + accelerated CPU heads),
+CPU gates + accelerated CPU heads), cpu-packed-mt (cpu-packed with each batch split across
+--cpu-workers cores, default all; identical outputs), metal (byte gates on GPU + accelerated CPU heads),
 metal-packed (batch-packed gates + heads, both on GPU). --backend auto picks cpu-packed for LUT4
 models; otherwise it picks metal if a Metal device is available, else cpu. --backend metal/metal-packed with no device is a usage error
 (exit 2), never a silent fallback.
@@ -124,12 +133,17 @@ alongside the search value regardless of this setting.
 /// cpu-packed for arity 4, otherwise metal if available else cpu (docs/spec/01-network.md §5:
 /// "Metal device がなければ...auto はCPU"). The backend is picked once per process/session; there is no per-request runtime
 /// fallback within one `gtp`/`selfplay` run.
+/// `--cpu-workers N` for `cpu-packed-mt` (default: every core).
+nonisolated(unsafe) var cpuWorkers = ProcessInfo.processInfo.activeProcessorCount
+
 func makeBackend(_ name: String, model: LogicModelData) -> any LogicBackend {
     switch name {
     case "cpu":
         return ScalarBackend(model: model)
     case "cpu-packed":
         return PackedCPUBackend(model: model)
+    case "cpu-packed-mt":
+        return ParallelPackedCPUBackend(model: model, workers: cpuWorkers)
     case "metal":
         do { return try MetalBackend(model: model) } catch { fail("metal backend unavailable: \(error)", .usage) }
     case "metal-packed":
@@ -143,7 +157,7 @@ func makeBackend(_ name: String, model: LogicModelData) -> any LogicBackend {
         }
         return ScalarBackend(model: model)
     default:
-        fail("unknown --backend \(name) (expected cpu, cpu-packed, metal, metal-packed, or auto)", .usage)
+        fail("unknown --backend \(name) (expected cpu, cpu-packed, cpu-packed-mt, metal, metal-packed, or auto)", .usage)
     }
 }
 
@@ -157,6 +171,8 @@ func cmdFeatures(_ args: Args) {
     if let k = komiOverride, !k.isFinite { fail("--komi must be a number", .usage) }
     let maxGames = args.options["max-games"].flatMap(Int.init) ?? Int.max
     let minTurn = args.options["min-turn"].flatMap(Int.init) ?? 0
+    let samplePerGame = args.options["sample-per-game"].flatMap(Int.init)
+    if let n = samplePerGame, n < 1 { fail("--sample-per-game must be a positive integer", .usage) }
     let featureVersion = args.options["feature-version"].flatMap(Int.init) ?? FeatureEncoder.featureVersion
     guard FeatureEncoder.supportedFeatureVersions.contains(featureVersion) else { fail("--feature-version must be 1 or 2", .usage) }
     let fm = FileManager.default
@@ -176,7 +192,17 @@ func cmdFeatures(_ args: Args) {
         }
         do {
             let replay = try PositionExport.replay(sgf: text, expectedSize: size, komiOverride: komiOverride)
-            for turn in minTurn ... replay.moves.count {
+            var turns = Array(minTurn ... max(minTurn, replay.moves.count))
+            if let n = samplePerGame, turns.count > n {
+                // Deterministic per game: seeded from the gameId (a SHA-256 hex digest).
+                var rng = UInt64(replay.gameId.prefix(16), radix: 16) ?? 0
+                for i in stride(from: turns.count - 1, to: 0, by: -1) {
+                    rng = rng &* 6364136223846793005 &+ 1442695040888963407
+                    turns.swapAt(i, Int((rng >> 33) % UInt64(i + 1)))
+                }
+                turns = Array(turns.prefix(n)).sorted()
+            }
+            for turn in turns where turn <= replay.moves.count {
                 var row = try PositionExport.row(replay, turn: turn, featureVersion: featureVersion)
                 row["sourceFile"] = name
                 out.write(try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys, .withoutEscapingSlashes]))
@@ -294,6 +320,7 @@ func cmdEvalBatch(_ args: Args) async {
     let batchSize = max(1, args.options["batch"].flatMap(Int.init) ?? 64)
     let backend = makeBackend(args.options["backend"] ?? "cpu-packed", model: model)
     let wantVersion = model.manifest.featureVersion
+    let withPolicy = args.flags.contains("policy")
     guard let text = try? String(contentsOfFile: positionsPath, encoding: .utf8) else { fail("cannot read \(positionsPath)", .usage) }
     guard FileManager.default.createFile(atPath: outPath, contents: nil), let out = FileHandle(forWritingAtPath: outPath) else { fail("cannot write \(outPath)", .usage) }
     var pending: [(id: String, size: Int, spatial: [UInt8], global: [Float], legal: [UInt8])] = []
@@ -307,10 +334,11 @@ func cmdEvalBatch(_ args: Args) async {
             let raw = try await backend.evaluate(features: features)
             let evals = try Postprocess.evaluate(raw: raw, features: features, temperature: model.manifest.calibrationTemperature)
             for (row, e) in zip(pending, evals) {
-                let obj: [String: Any] = [
+                var obj: [String: Any] = [
                     "positionId": row.id, "expectedResult": e.expectedResult, "winDrawLoss": e.winDrawLoss, "scoreMean": e.scoreMean,
                     "ownership": e.ownership.map { (Double($0) * 1e4).rounded() / 1e4 },
                 ]
+                if withPolicy { obj["policy"] = e.policy.map { (Double($0) * 1e6).rounded() / 1e6 } }
                 out.write(try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]))
                 out.write("\n".data(using: .utf8)!)
             }
@@ -400,8 +428,12 @@ func parseValueSource(_ args: Args, boardSize: Int) -> ValueSource {
 
 func makeSlots(_ args: Args) -> [Int: GTPEngine.ModelSlot] {
     let backendName = args.options["backend"] ?? "auto"
-    guard ["cpu", "cpu-packed", "metal", "metal-packed", "auto"].contains(backendName) else {
-        fail("--backend \(backendName) must be cpu, cpu-packed, metal, metal-packed, or auto", .usage)
+    guard ["cpu", "cpu-packed", "cpu-packed-mt", "metal", "metal-packed", "auto"].contains(backendName) else {
+        fail("--backend \(backendName) must be cpu, cpu-packed, cpu-packed-mt, metal, metal-packed, or auto", .usage)
+    }
+    if let raw = args.options["cpu-workers"] {
+        guard let n = Int(raw), n >= 1 else { fail("--cpu-workers must be a positive integer, got \(raw)", .usage) }
+        cpuWorkers = n
     }
     var slots: [Int: GTPEngine.ModelSlot] = [:]
     for (size, key) in [(9, "model-9"), (19, "model-19")] {
@@ -426,6 +458,19 @@ func cmdGTP(_ args: Args) async {
     let slots = makeSlots(args)
     var cfg = GTPEngine.Config()
     cfg.visits = args.options["visits"].flatMap(Int.init) ?? 100
+    if args.flags.contains("pipeline") { cfg.searchSettings.pipelinedEvaluation = true }
+    if let raw = args.options["batch-growth"] {
+        guard let n = Int(raw), n >= 0 else { fail("--batch-growth must be a non-negative integer, got \(raw)", .usage) }
+        cfg.searchSettings.batchGrowthDivisor = n
+    }
+    if let raw = args.options["max-nodes"] {
+        guard let n = Int(raw), n >= 1 else { fail("--max-nodes must be a positive integer, got \(raw)", .usage) }
+        cfg.searchSettings.maxNodes = n
+    }
+    if let raw = args.options["leaf-batch"] {
+        guard let n = Int(raw), n >= 1 else { fail("--leaf-batch must be a positive integer, got \(raw)", .usage) }
+        cfg.searchSettings.leafBatch = n
+    }
     cfg.defaultBoardSize = slots[9] != nil ? 9 : 19
     cfg.searchSettings.valueSource = parseValueSource(args, boardSize: cfg.defaultBoardSize)
     if let raw = args.options["resign-threshold"] {
