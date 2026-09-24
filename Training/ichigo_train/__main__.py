@@ -181,7 +181,7 @@ def cmd_label(args) -> int:
     cmd = [args.teacher_bin, "analysis", "-config", args.teacher_config, "-model", args.teacher_model]
     cfg = TeacherConfig(command=cmd, teacher_id=_teacher_id(args.teacher_bin, args.teacher_model), perspective=args.perspective,
                         visits=args.visits, timeout_seconds=args.timeout, retries=2, queue_depth=args.queue_depth,
-                        stderr_log=args.out + ".teacher-stderr.log")
+                        stderr_log=args.out + ".teacher-stderr.log", rules=args.rules)
     t0 = time.monotonic()
 
     def progress(n, stats):
@@ -193,7 +193,7 @@ def cmd_label(args) -> int:
     summary = {"positions": args.positions, "out": args.out, "labels": stats.labels, "rejected": stats.rejected, "rejectReasons": stats.reject_reasons,
                "queries": stats.queries, "retries": stats.retries, "duplicates": stats.duplicates, "elapsedSeconds": round(elapsed, 1),
                "labelsPerSecond": round(stats.labels / max(elapsed, 1e-9), 2), "teacherId": cfg.teacher_id, "visits": args.visits,
-               "perspective": args.perspective, "teacherConfigSha256": hashlib.sha256(open(args.teacher_config, "rb").read()).hexdigest()}
+               "perspective": args.perspective, "rules": args.rules, "teacherConfigSha256": hashlib.sha256(open(args.teacher_config, "rb").read()).hexdigest()}
     with open(args.out + ".summary.json", "w") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))
@@ -330,6 +330,8 @@ def build_parser() -> argparse.ArgumentParser:
     l.add_argument("--teacher-config", required=True)
     l.add_argument("--perspective", default="sidetomove", choices=["black", "white", "sidetomove"], help="must equal reportAnalysisWinratesAs in the teacher config")
     l.add_argument("--visits", type=int, default=128)
+    l.add_argument("--rules", default="area", choices=["area", "japanese"],
+                   help="rules the teacher scores under (positions are always replayed under cgos-area-psk-v1); recorded as labelRules")
     l.add_argument("--timeout", type=float, default=60.0)
     l.add_argument("--queue-depth", type=int, default=16)
     l.add_argument("--max-positions", type=int, default=None)

@@ -118,6 +118,20 @@ def test_feature_version_comes_from_the_position_rows(tmp_path):
         D.build_dataset(str(pos), str(lab), str(tmp_path / "mixed"), {})
 
 
+def test_label_rules_recorded_and_mixing_rejected(tmp_path):
+    rows = _many_games()
+    pos = tmp_path / "pos.jsonl"
+    _write(pos, rows)
+    lab = tmp_path / "lab.jsonl"
+    _write(lab, [_label(r) for r in rows])  # no labelRules key: area
+    assert D.build_dataset(str(pos), str(lab), str(tmp_path / "area"), {})["labelRules"] == "area"
+    _write(lab, [dict(_label(r), labelRules="japanese") for r in rows])
+    assert D.build_dataset(str(pos), str(lab), str(tmp_path / "jp"), {})["labelRules"] == "japanese"
+    _write(lab, [dict(_label(r), labelRules="japanese" if i % 2 else "area") for i, r in enumerate(rows)])
+    with pytest.raises(ValueError, match="mixed labelRules"):
+        D.build_dataset(str(pos), str(lab), str(tmp_path / "mixed"), {})
+
+
 def test_empty_holdout_is_error(tmp_path):
     rows = _game(0, [["B", "E5"], ["W", "D4"]])
     pos = tmp_path / "pos.jsonl"; lab = tmp_path / "lab.jsonl"

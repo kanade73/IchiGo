@@ -160,9 +160,11 @@ def load_shard(path: str) -> dict[str, np.ndarray]:
 
 
 class DatasetWriter:
-    def __init__(self, out_dir: str, board_size: int, shard_size: int = SHARD_SIZE, feature_version: int = FEATURE_VERSION):
+    def __init__(self, out_dir: str, board_size: int, shard_size: int = SHARD_SIZE, feature_version: int = FEATURE_VERSION,
+                 label_rules: str = "area"):
         self.out_dir = out_dir
         self.feature_version = feature_version
+        self.label_rules = label_rules  # rules the teacher scored under (teacher.TEACHER_RULES key)
         self.size = board_size
         self.shard_size = shard_size
         self.buffers = {s: ShardBuffer(board_size) for s in ("train", "validation", "test")}
@@ -199,6 +201,7 @@ class DatasetWriter:
             raise ValueError(f"holdout split is empty ({self.counts}); add more games")
         manifest = {
             "schemaVersion": SCHEMA_VERSION, "featureVersion": self.feature_version, "rulesId": RULES_ID,
+            "labelRules": self.label_rules,
             "boardSize": self.size, "shardSize": self.shard_size, "counts": self.counts, "shards": self.shards,
             "provenance": provenance,
         }
@@ -244,10 +247,14 @@ def build_dataset(positions_path: str, labels_path: str, out_dir: str, provenanc
     board with a trustworthy scored result; those positions also get a wdl target (to-move view).
     """
     labels: dict[str, dict] = {}
+    label_rules: set[str] = set()
     with open(labels_path) as f:
         for line in f:
             l = json.loads(line)
             labels.setdefault(l["positionId"], l)
+            label_rules.add(l.get("labelRules", "area"))
+    if len(label_rules) > 1:
+        raise ValueError(f"mixed labelRules in {labels_path}: {sorted(label_rules)}")
     report = {"positions": 0, "labelled": 0, "unlabelled": 0, "duplicates": 0, "split": {}, "wdl": 0}
     # Pass 1: split key per game (needs the full move list of the game -> max turn row) and dedupe map
     game_moves: dict[str, dict] = {}
@@ -293,7 +300,7 @@ def build_dataset(positions_path: str, labels_path: str, out_dir: str, provenanc
                 size = r["boardSize"]
                 if fv not in SUPPORTED_FEATURE_VERSIONS:
                     raise ValueError(f"unsupported featureVersion {fv} in {positions_path}")
-                writer = DatasetWriter(out_dir, size, shard_size, feature_version=fv)
+                writer = DatasetWriter(out_dir, size, shard_size, feature_version=fv, label_rules=next(iter(label_rules), "area"))
             assert r["boardSize"] == size, "mixed board sizes in one dataset"
             if fv != writer.feature_version:
                 raise ValueError(f"mixed featureVersion in {positions_path}: {fv} after {writer.feature_version}")

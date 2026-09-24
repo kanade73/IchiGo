@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p19-small-v2jp-local-100k",
+      "gpu": 0,
+      "config": "configs/experiments/phase19/p19-small-v2jp-local-100k.json",
+      "out": "runs/p19-small-v2jp-local-100k"
+    },
+    {
+      "runId": "p19-small-v2jp-dilated-100k",
+      "gpu": 1,
+      "config": "configs/experiments/phase19/p19-small-v2jp-dilated-100k.json",
+      "out": "runs/p19-small-v2jp-dilated-100k"
+    },
+    {
+      "runId": "p19-wide512-v2jp-local-200k",
+      "gpu": 2,
+      "config": "configs/experiments/phase19/p19-wide512-v2jp-local-200k.json",
+      "out": "runs/p19-wide512-v2jp-local-200k"
+    },
+    {
+      "runId": "p19-wide512-v2jp-dilated-200k",
+      "gpu": 3,
+      "config": "configs/experiments/phase19/p19-wide512-v2jp-dilated-200k.json",
+      "out": "runs/p19-wide512-v2jp-dilated-200k"
+    },
+    {
+      "runId": "p19-wide512-v2jp-mid-200k",
+      "gpu": 4,
+      "config": "configs/experiments/phase19/p19-wide512-v2jp-mid-200k.json",
+      "out": "runs/p19-wide512-v2jp-mid-200k"
+    },
+    {
+      "runId": "p19-c1024-v2jp-dilated-100k",
+      "gpu": 5,
+      "config": "configs/experiments/phase19/p19-c1024-v2jp-dilated-100k.json",
+      "out": "runs/p19-c1024-v2jp-dilated-100k"
+    }
+  ]
+}

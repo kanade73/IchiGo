@@ -33,6 +33,16 @@ RULES_JSON = {
     "hasButton": False, "whiteHandicapBonus": "0", "friendlyPassOk": True,
 }
 RULES_ID = "cgos-area-psk-v1"
+# Rules the teacher scores under. Positions are always replayed under RULES_ID (positional superko,
+# no suicide), and a sequence legal under positional superko is legal under simple ko too, so
+# the same positions can be labelled for a territory-scoring tournament (UEC cup: Japanese rules).
+TEACHER_RULES = {
+    "area": RULES_JSON,
+    "japanese": {
+        "ko": "SIMPLE", "scoring": "TERRITORY", "tax": "SEKI", "suicide": False,
+        "hasButton": False, "whiteHandicapBonus": "0", "friendlyPassOk": True,
+    },
+}
 GTP_LETTERS = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
 
 
@@ -47,6 +57,7 @@ class TeacherConfig:
     retries: int = 2
     queue_depth: int = 16                   # max in-flight queries
     stderr_log: str | None = None
+    rules: str = "area"                     # key of TEACHER_RULES; recorded in every label as labelRules
 
 
 @dataclass
@@ -93,13 +104,23 @@ def convert_winrate(w: float, perspective: str, to_move: str) -> float:
     return w if to_move_sign(perspective, to_move) > 0 else 1.0 - w
 
 
-def build_query(qid: str, game: dict, turns: list[int], visits: int) -> dict:
+def sgf_point_to_gtp(point: str, size: int) -> str:
+    """Positions rows store setup stones as SGF points ("aa" = top-left); KataGo's analysis engine
+    takes GTP vertices ("A19" on 19x19), like the moves."""
+    x, y = ord(point[0]) - ord("a"), ord(point[1]) - ord("a")
+    if not (0 <= x < size and 0 <= y < size):
+        raise ValueError(f"setup stone {point!r} is off a {size}x{size} board")
+    return f"{GTP_LETTERS[x]}{size - y}"
+
+
+def build_query(qid: str, game: dict, turns: list[int], visits: int, rules: str = "area") -> dict:
+    size = game["boardSize"]
     return {
         "id": qid,
         "moves": game["moves"],
-        "initialStones": game["initialStones"],
+        "initialStones": [[c, sgf_point_to_gtp(p, size)] for c, p in game["initialStones"]],
         "initialPlayer": game["initialPlayer"],
-        "rules": RULES_JSON,
+        "rules": TEACHER_RULES[rules],
         "komi": game["komi"],
         "boardXSize": game["boardSize"],
         "boardYSize": game["boardSize"],
@@ -160,6 +181,7 @@ def response_to_label(resp: dict, pos: dict, cfg: TeacherConfig) -> tuple[dict |
         "toMove": to_move, "boardSize": S, "policy": policy, "expectedResult": expected, "score": score,
         "ownership": [max(-1.0, min(1.0, o)) for o in own_f],
         "teacherVisits": int(root.get("visits", 0)), "sourceType": "teacher", "teacherId": cfg.teacher_id,
+        "labelRules": cfg.rules,
     }, None
 
 
@@ -221,7 +243,7 @@ def label_positions(positions_path: str, out_path: str, cfg: TeacherConfig, max_
         counter += 1
         qid = f"{game['gameId'][:24]}-{counter}"
         in_flight[qid] = {"game": game, "positions": positions, "attempt": attempt, "sent": time.monotonic(), "last": None, "got": set()}
-        proc.submit(build_query(qid, game, list(positions), cfg.visits))
+        proc.submit(build_query(qid, game, list(positions), cfg.visits, cfg.rules))
         stats.queries += 1
 
     def handle_response(resp: dict):

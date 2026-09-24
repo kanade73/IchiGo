@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from ichigo_train.teacher import TeacherConfig, gtp_to_index, label_positions, response_to_label
+from ichigo_train.teacher import TEACHER_RULES, TeacherConfig, build_query, gtp_to_index, label_positions, response_to_label
 
 FAKE = os.path.join(os.path.dirname(__file__), "fake_teacher.py")
 S = 9
@@ -54,6 +54,27 @@ def test_basic_labels_and_normalisation(tmp_path):
     assert l["ownership"][0] == 0.75 and l["toMove"] == "W"
     # illegal (occupied) points have 0 policy
     assert l["policy"][gtp_to_index("E5", S)] == 0
+
+
+def test_japanese_rules_are_sent_and_recorded(tmp_path):
+    game = {"moves": [["B", "E5"]], "initialStones": [], "initialPlayer": "B", "komi": 6.5, "boardSize": 19}
+    assert build_query("q", game, [1], 64)["rules"] == TEACHER_RULES["area"]
+    q = build_query("q", game, [1], 64, rules="japanese")
+    assert q["rules"]["scoring"] == "TERRITORY" and q["rules"]["ko"] == "SIMPLE" and q["komi"] == 6.5
+    pos = tmp_path / "pos.jsonl"
+    make_positions(str(pos))
+    out = tmp_path / "labels.jsonl"
+    cfg = TeacherConfig(command=[sys.executable, FAKE], teacher_id="fake", timeout_seconds=5.0, queue_depth=2, rules="japanese")
+    label_positions(str(pos), str(out), cfg)
+    labels = [json.loads(l) for l in open(out)]
+    assert labels and all(l["labelRules"] == "japanese" for l in labels)
+
+
+def test_setup_stones_are_sent_as_gtp_vertices():
+    game = {"moves": [["W", "D4"]], "initialStones": [["B", "aa"], ["B", "nb"], ["W", "ss"]], "initialPlayer": "W", "komi": 7, "boardSize": 19}
+    assert build_query("q", game, [0], 8)["initialStones"] == [["B", "A19"], ["B", "O18"], ["W", "T1"]]
+    game9 = dict(game, initialStones=[["B", "ee"]], boardSize=9)
+    assert build_query("q", game9, [0], 8)["initialStones"] == [["B", "E5"]]
 
 
 def test_out_of_order_and_duplicates(tmp_path):

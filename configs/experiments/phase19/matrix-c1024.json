@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p19-c1024-v2jp-dilated-100k",
+      "gpu": 5,
+      "config": "configs/experiments/phase19/p19-c1024-v2jp-dilated-100k.json",
+      "out": "runs/p19-c1024-v2jp-dilated-100k"
+    }
+  ]
+}
