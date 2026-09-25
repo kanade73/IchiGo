@@ -26,7 +26,7 @@ from .symmetry import map_point
 
 SCHEMA_VERSION = 1
 FEATURE_VERSION = 1
-SUPPORTED_FEATURE_VERSIONS = (1, 2)  # docs/spec/01-network.md §1; rows without the key are v1
+SUPPORTED_FEATURE_VERSIONS = (1, 2, 3)  # docs/spec/01-network.md §1; rows without the key are v1
 RULES_ID = "cgos-area-psk-v1"
 SHARD_SIZE = 4096
 TARGET_NAMES = ["policy", "expected_result", "score", "ownership", "wdl"]

@@ -20,7 +20,7 @@ public struct ModelManifest: Sendable, Equatable {
     public static let featureVersion = 1
     /// docs/spec/01-network.md §1: 1 = 7 moves of history, 2 = 2 moves + group planes. Both use
     /// the same 32-channel layout, so every backend runs either; only the encoder differs.
-    public static let supportedFeatureVersions: Set<Int> = [1, 2]
+    public static let supportedFeatureVersions: Set<Int> = [1, 2, 3]
     public static let supportedHeadVersions: Set<Int> = [1, 2, 3]
     public static let rulesID = "cgos-area-psk-v1"
     public static let gateEncoding = "truth-table-lsb-2a-plus-b"

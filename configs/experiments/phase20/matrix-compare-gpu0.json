@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p20-small-base-s0-100k",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20-small-base-s0-100k.json",
+      "out": "runs/p20-small-base-s0-100k",
+      "skip": true,
+      "note": "identical config to p11-small-headv3-x3data-dagger-v2-100k (same seed, data, code path); that run is the seed-0 baseline"
+    },
+    {
+      "runId": "p20-small-or-chains-max-s0-100k",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20-small-or-chains-max-s0-100k.json",
+      "out": "runs/p20-small-or-chains-max-s0-100k"
+    },
+    {
+      "runId": "p20-small-or-chains-prob-s0-100k",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20-small-or-chains-prob-s0-100k.json",
+      "out": "runs/p20-small-or-chains-prob-s0-100k"
+    },
+    {
+      "runId": "p20-small-th-ste-out-s0-100k",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20-small-th-ste-out-s0-100k.json",
+      "out": "runs/p20-small-th-ste-out-s0-100k"
+    }
+  ]
+}

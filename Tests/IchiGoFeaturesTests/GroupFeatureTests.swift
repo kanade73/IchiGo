@@ -25,6 +25,40 @@ final class GroupFeatureTests: XCTestCase {
 
     private let empty9 = ". . . . . . . . ."
 
+    /// `compute(layout:)` places all stones at once (one chain rebuild). On legal positions it must
+    /// give exactly the planes that placing stones one by one with `setStone` gave.
+    func testBulkLayoutMatchesSequentialPlacementOnRandomGames() {
+        var seed: UInt64 = 20260924
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        var checked = 0
+        for S in [9, 19] {
+            for _ in 0 ..< (S == 9 ? 40 : 8) {
+                let board = Board(S, S)
+                var pla = Player.black
+                for move in 0 ..< S * S * 2 {
+                    let legal = board.playableLocations().filter { board.colors[$0] == .empty && board.isLegal($0, pla) }
+                    if legal.isEmpty { break }
+                    board.playMove(legal[next(legal.count)], pla)
+                    pla = pla.opponent
+                    guard move % 9 == 4 else { continue }
+                    var l = StoneLayout(repeating: 0, count: S * S)
+                    for p in 0 ..< S * S { l[p] = UInt8(max(0, board.colors[Location.getLoc(p % S, p / S, S)].rawValue)) }
+                    let reference = Board(S, S)
+                    for p in 0 ..< S * S where l[p] != 0 {
+                        _ = reference.setStone(Location.getLoc(p % S, p / S, S), Color(rawValue: Int8(l[p])) ?? .empty)
+                    }
+                    XCTAssertEqual(GroupFeatures.compute(layout: l, size: S, toMove: pla),
+                                   GroupFeatures.compute(board: reference, toMove: pla), "size \(S) move \(move)")
+                    checked += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 500)
+    }
+
     func testOneLibertyCornerStoneIsLadderCaptured() {
         let (l, S) = layout([
             "O X . . . . . . .",
@@ -119,6 +153,6 @@ final class GroupFeatureTests: XCTestCase {
                 XCTAssertEqual(v2.spatial[p * 32 + GroupFeatures.firstChannel + i], expected)
             }
         }
-        XCTAssertThrowsError(try FeatureEncoder.encode([snap], featureVersion: 3))
+        XCTAssertThrowsError(try FeatureEncoder.encode([snap], featureVersion: 4))
     }
 }

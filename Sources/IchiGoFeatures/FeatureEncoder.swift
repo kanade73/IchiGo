@@ -4,14 +4,15 @@ import IchiGoCore
 /// Encodes `PositionSnapshot`s into the 32-channel spatial + 4 global features
 /// (docs/spec/01-network.md §1). Output layout `[B,S,S,32]` flat as `(((b*S+y)*S+x)*32+c)`.
 /// featureVersion 1 fills channels 2...15 with 7 moves of history; featureVersion 2 keeps only
-/// 2 moves (channels 2...5) and puts the `GroupFeatures` planes in channels 6...15. Every other
-/// channel and the global features are identical in both versions.
+/// 2 moves (channels 2...5) and puts the `GroupFeatures` planes in channels 6...15; featureVersion 3
+/// keeps 1 move (channels 2, 3) and puts the `GroupFeaturesV3` planes in channels 4, 5, 16 (was:
+/// empty) and 27 (was: edge ring). Every other channel and the global features are identical.
 public enum FeatureEncoder {
     public static let spatialChannels = 32
     public static let globalFeatures = 4
     /// The version `ichigo features` writes by default.
     public static let featureVersion = 1
-    public static let supportedFeatureVersions: Set<Int> = [1, 2]
+    public static let supportedFeatureVersions: Set<Int> = [1, 2, 3]
 
     public struct Encoded: Sendable, Equatable {
         public let boardSize: Int
@@ -34,8 +35,10 @@ public enum FeatureEncoder {
         var spatial = [UInt8](repeating: 0, count: snapshots.count * S * S * spatialChannels)
         var global = [Float](repeating: 0, count: snapshots.count * globalFeatures)
         var legal = [UInt8](repeating: 0, count: snapshots.count * (S * S + 1))
+        let groups = featureVersion >= 2 ? GroupFeatures.compute(batch: snapshots, featureVersion: featureVersion) : []
         for (b, snap) in snapshots.enumerated() {
-            encodeOne(snap, featureVersion: featureVersion, into: &spatial, offset: b * S * S * spatialChannels)
+            encodeOne(snap, featureVersion: featureVersion, groupBits: featureVersion >= 2 ? groups[b] : nil,
+                      into: &spatial, offset: b * S * S * spatialChannels)
             let g = globalFeatures(snap)
             for i in 0 ..< 4 { global[b * 4 + i] = g[i] }
             for i in 0 ..< (S * S + 1) { legal[b * (S * S + 1) + i] = snap.legal[i] }
@@ -56,15 +59,17 @@ public enum FeatureEncoder {
         ]
     }
 
-    static func encodeOne(_ snap: PositionSnapshot, featureVersion: Int, into out: inout [UInt8], offset: Int) {
+    static func encodeOne(_ snap: PositionSnapshot, featureVersion: Int, groupBits precomputed: [UInt16]? = nil,
+                          into out: inout [UInt8], offset: Int) {
         let S = snap.boardSize
         let C = spatialChannels
         let me = UInt8(snap.toMove.rawValue)
         let opp = UInt8(snap.toMove.opponent.rawValue)
         @inline(__always) func set(_ x: Int, _ y: Int, _ c: Int) { out[offset + ((y * S + x) * C) + c] = 1 }
         let current = snap.layouts[0]
-        let historyDepth = featureVersion >= 2 ? 3 : 8
-        let groupBits = featureVersion >= 2 ? GroupFeatures.compute(layout: current, size: S, toMove: snap.toMove) : []
+        let historyDepth = featureVersion >= 3 ? 2 : featureVersion >= 2 ? 3 : 8
+        let groupBits = featureVersion >= 2
+            ? (precomputed ?? GroupFeatures.compute(snapshot: snap, featureVersion: featureVersion)) : []
         for y in 0 ..< S {
             for x in 0 ..< S {
                 let p = y * S + x
@@ -77,8 +82,13 @@ public enum FeatureEncoder {
                     for i in 0 ..< GroupFeatures.planes where groupBits[p] & (UInt16(1) << UInt16(i)) != 0 {
                         set(x, y, GroupFeatures.firstChannel + i)
                     }
+                    if featureVersion >= 3 {
+                        for i in 0 ..< GroupFeaturesV3.planes where groupBits[p] & (UInt16(1) << UInt16(GroupFeatures.v3Shift + i)) != 0 {
+                            set(x, y, GroupFeaturesV3.channels[i])
+                        }
+                    }
                 }
-                if current[p] == 0 { set(x, y, 16) }
+                if featureVersion < 3, current[p] == 0 { set(x, y, 16) }
                 if snap.legal[p] == 1 { set(x, y, 17) }
                 if snap.koPoint == p { set(x, y, 18) }
                 let libs = snap.liberties[p]
@@ -86,7 +96,7 @@ public enum FeatureEncoder {
                     let base = current[p] == me ? 19 : 22
                     if libs == 1 { set(x, y, base) } else if libs == 2 { set(x, y, base + 1) } else if libs >= 3 { set(x, y, base + 2) }
                 }
-                if x == 0 || y == 0 || x == S - 1 || y == S - 1 { set(x, y, 27) }
+                if featureVersion < 3, x == 0 || y == 0 || x == S - 1 || y == S - 1 { set(x, y, 27) }
                 set(x, y, 28)
             }
         }

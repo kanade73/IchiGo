@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "runId": "p20o-small-or-chains-max",
+  "data": "data/fixture-p20-512",
+  "out": "runs/p20o-small-or-chains-max",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 128,
+  "effectiveBatch": 128,
+  "maxSteps": 4000,
+  "validationInterval": 1000,
+  "checkpointInterval": 4000,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "d4",
+  "precision": "fp32",
+  "headVersion": 3,
+  "gateLearningRate": 0.1,
+  "dilations": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "fixtureMode": true,
+  "aggregation": {
+    "type": "component-or",
+    "afterLayers": [
+      2,
+      5
+    ],
+    "channels": 32,
+    "scope": "chains",
+    "relaxation": "max"
+  }
+}

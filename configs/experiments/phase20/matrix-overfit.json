@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p20o-small-base",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-base.json",
+      "out": "runs/p20o-small-base"
+    },
+    {
+      "runId": "p20o-small-or-chains-prob",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-or-chains-prob.json",
+      "out": "runs/p20o-small-or-chains-prob"
+    },
+    {
+      "runId": "p20o-small-or-chains-max",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-or-chains-max.json",
+      "out": "runs/p20o-small-or-chains-max"
+    },
+    {
+      "runId": "p20o-small-or-eyes-prob",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-or-eyes-prob.json",
+      "out": "runs/p20o-small-or-eyes-prob"
+    },
+    {
+      "runId": "p20o-small-th-tanh",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-th-tanh.json",
+      "out": "runs/p20o-small-th-tanh"
+    },
+    {
+      "runId": "p20o-small-th-ste",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-th-ste.json",
+      "out": "runs/p20o-small-th-ste"
+    },
+    {
+      "runId": "p20o-small-th-ste-out",
+      "gpu": 0,
+      "config": "configs/experiments/phase20/p20o-small-th-ste-out.json",
+      "out": "runs/p20o-small-th-ste-out"
+    }
+  ]
+}

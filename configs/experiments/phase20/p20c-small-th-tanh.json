@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "runId": "p20c-small-th-tanh",
+  "data": "data/dataset-9x3-dagger-v2",
+  "out": "runs/p20c-small-th-tanh",
+  "boardSize": 9,
+  "profile": "small",
+  "seed": 20260908,
+  "device": "cuda",
+  "microBatch": 128,
+  "effectiveBatch": 128,
+  "maxSteps": 12000,
+  "validationInterval": 2000,
+  "checkpointInterval": 3000,
+  "discretization": "prefix-60-30-10",
+  "augmentation": "d4",
+  "precision": "fp32",
+  "headVersion": 3,
+  "gateLearningRate": 0.1,
+  "dilations": [
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "aggregation": {
+    "type": "threshold",
+    "afterLayers": [
+      2,
+      5
+    ],
+    "nodes": 64,
+    "fanIn": 16,
+    "weights": "tanh"
+  }
+}

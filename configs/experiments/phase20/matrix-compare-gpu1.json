@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p20-small-base-s1-100k",
+      "gpu": 1,
+      "config": "configs/experiments/phase20/p20-small-base-s1-100k.json",
+      "out": "runs/p20-small-base-s1-100k"
+    },
+    {
+      "runId": "p20-small-or-chains-max-s1-100k",
+      "gpu": 1,
+      "config": "configs/experiments/phase20/p20-small-or-chains-max-s1-100k.json",
+      "out": "runs/p20-small-or-chains-max-s1-100k"
+    },
+    {
+      "runId": "p20-small-or-chains-prob-s1-100k",
+      "gpu": 1,
+      "config": "configs/experiments/phase20/p20-small-or-chains-prob-s1-100k.json",
+      "out": "runs/p20-small-or-chains-prob-s1-100k"
+    },
+    {
+      "runId": "p20-small-th-ste-out-s1-100k",
+      "gpu": 1,
+      "config": "configs/experiments/phase20/p20-small-th-ste-out-s1-100k.json",
+      "out": "runs/p20-small-th-ste-out-s1-100k"
+    }
+  ]
+}

@@ -127,6 +127,45 @@ public enum PositionExport {
     }
 }
 
+extension PositionExport {
+    /// Re-encodes an exported row under `featureVersion` by replaying its setup and moves under
+    /// the same rules. Every other key is kept; the recomputed positionId must equal the row's.
+    public static func reencode(_ row: [String: Any], featureVersion: Int) throws -> [String: Any] {
+        guard let S = row["boardSize"] as? Int, let komiNumber = row["komi"] as? NSNumber,
+              let setup = row["initialStones"] as? [[String]], let ip = row["initialPlayer"] as? String,
+              let moves = row["moves"] as? [[String]], let positionId = row["positionId"] as? String else {
+            throw RejectReason.parse("row lacks boardSize/komi/initialStones/initialPlayer/moves/positionId")
+        }
+        guard (row["rulesId"] as? String ?? IchiGoRules.rulesID) == IchiGoRules.rulesID else {
+            throw RejectReason.parse("rulesId \(row["rulesId"] ?? "") is not \(IchiGoRules.rulesID)")
+        }
+        let komi = komiNumber.floatValue
+        var stones: [(player: Player, x: Int, y: Int)] = []
+        for s in setup {
+            guard s.count == 2, case let .point(x, y) = try Coordinates.parseSGF(s[1], size: S) else {
+                throw RejectReason.invalidInitialStone("\(s)")
+            }
+            stones.append((s[0] == "B" ? .black : .white, x, y))
+        }
+        let state = try GameState(boardSize: S, komi: komi, initialStones: stones, initialPlayer: ip == "B" ? .black : .white)
+        for (i, m) in moves.enumerated() {
+            guard m.count == 2 else { throw RejectReason.parse("move \(i)") }
+            do { try state.play(m[0] == "B" ? .black : .white, Coordinates.parseGTP(m[1], size: S)) } catch {
+                throw RejectReason.illegalMove(index: i, player: m[0], move: m[1], reason: "\(error)")
+            }
+        }
+        let pid = canonicalHash(boardSize: S, komi: komi, initialStones: setup, initialPlayer: ip, moves: moves)
+        guard pid == positionId else { throw RejectReason.parse("positionId \(positionId) does not reproduce (got \(pid))") }
+        let enc = try FeatureEncoder.encode([state.snapshot()], featureVersion: featureVersion)
+        var out = row
+        out["featureVersion"] = featureVersion
+        out["spatial"] = enc.spatial.map { Int($0) }
+        out["global"] = enc.global.map { Double($0) }
+        out["legal"] = enc.legal.map { Int($0) }
+        return out
+    }
+}
+
 /// Minimal SHA-256 (duplicate of LogicModel.SHA256 to keep IchiGoFeatures free of LogicModel).
 enum SHA256Hex {
     private static let k: [UInt32] = [

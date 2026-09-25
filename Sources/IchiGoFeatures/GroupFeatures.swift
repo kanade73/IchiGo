@@ -20,16 +20,67 @@ public enum GroupFeatures {
     public static let planes = 10
     public static let firstChannel = 6
     public static let maxEyeRegion = 8
+    /// featureVersion 3 keeps its `GroupFeaturesV3` planes in bits `v3Shift...` of the same word.
+    public static let v3Shift = 10
 
     /// Every plane depends only on where the stones are (not on ko, history or superko), so the
     /// encoder can rebuild a board from a snapshot's current layout; search and export need no
     /// extra state for featureVersion 2.
     public static func compute(layout: StoneLayout, size: Int, toMove: Player) -> [UInt16] {
-        let board = Board(size, size)
-        for p in 0 ..< size * size where layout[p] != 0 {
-            _ = board.setStone(Location.getLoc(p % size, p / size, size), Color(rawValue: Int8(layout[p])) ?? .empty)
+        compute(board: board(layout: layout, size: size), toMove: toMove)
+    }
+
+    /// Group planes for a whole batch, positions in parallel (each builds its own `Board`); the
+    /// encoder ran them one by one on the evaluator's thread.
+    public static func compute(batch snapshots: [PositionSnapshot], featureVersion: Int = 2, minParallel: Int = 8) -> [[UInt16]] {
+        if snapshots.count < minParallel {
+            return snapshots.map { compute(snapshot: $0, featureVersion: featureVersion) }
         }
-        return compute(board: board, toMove: toMove)
+        let out = ResultSlots(count: snapshots.count)
+        DispatchQueue.concurrentPerform(iterations: snapshots.count) { i in
+            out.set(i, compute(snapshot: snapshots[i], featureVersion: featureVersion))
+        }
+        return out.values
+    }
+
+    /// The v2 planes (bits 0...9), plus the v3 planes in bits `v3Shift...` for featureVersion >= 3.
+    public static func compute(snapshot snap: PositionSnapshot, featureVersion: Int) -> [UInt16] {
+        var bits = compute(layout: snap.layouts[0], size: snap.boardSize, toMove: snap.toMove)
+        if featureVersion >= 3 {
+            let v3 = GroupFeaturesV3.compute(layout: snap.layouts[0], size: snap.boardSize)
+            for p in bits.indices where v3[p] != 0 { bits[p] |= UInt16(v3[p]) << UInt16(v3Shift) }
+        }
+        return bits
+    }
+
+    /// Each index is written by exactly one `concurrentPerform` iteration and read only after it
+    /// returns.
+    private final class ResultSlots: @unchecked Sendable {
+        private let slots: UnsafeMutableBufferPointer<[UInt16]>
+        init(count: Int) {
+            slots = .allocate(capacity: count)
+            slots.initialize(repeating: [])
+        }
+        deinit {
+            slots.deinitialize()
+            slots.deallocate()
+        }
+        func set(_ i: Int, _ v: [UInt16]) { slots[i] = v }
+        var values: [[UInt16]] { Array(slots) }
+    }
+
+    /// One bulk placement and one chain rebuild (placing stones one at a time rebuilt every chain
+    /// per stone: 46% of the encoder's time in search). For a legal layout, every chain keeps a
+    /// liberty, so nothing is captured and the result equals sequential `setStone`.
+    static func board(layout: StoneLayout, size: Int) -> Board {
+        let board = Board(size, size)
+        var placements: [(loc: Loc, color: Color)] = []
+        placements.reserveCapacity(size * size)
+        for p in 0 ..< size * size where layout[p] != 0 {
+            placements.append((loc: Location.getLoc(p % size, p / size, size), color: Color(rawValue: Int8(layout[p])) ?? .empty))
+        }
+        board.setStonesTolerant(placements)
+        return board
     }
 
     public static func compute(board: Board, toMove: Player) -> [UInt16] {

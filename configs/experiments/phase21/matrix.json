@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "runId": "p21-small-v3-s0-100k",
+      "gpu": 6,
+      "config": "configs/experiments/phase21/p21-small-v3-s0-100k.json",
+      "out": "runs/p21-small-v3-s0-100k"
+    },
+    {
+      "runId": "p21-small-v3-s1-100k",
+      "gpu": 6,
+      "config": "configs/experiments/phase21/p21-small-v3-s1-100k.json",
+      "out": "runs/p21-small-v3-s1-100k"
+    }
+  ]
+}

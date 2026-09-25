@@ -19,6 +19,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from . import aggregation as AGG
 from . import gates as G
 from .wiring import INPUT_CHANNELS, ModelSpec, Wiring, generate_wiring, generate_wiring_candidates, validate_wiring
 
@@ -179,7 +180,8 @@ class LayerGather:
 class LogicNet(nn.Module):
     def __init__(self, spec: ModelSpec, wiring: Wiring | None = None, heads: dict[str, np.ndarray] | None = None,
                  head_version: int = HEAD_VERSION, wiring_mode: str = "fixed", wiring_candidates: int = 8,
-                 candidate_wiring: np.ndarray | None = None, wiring_tau: float = 1.0):
+                 candidate_wiring: np.ndarray | None = None, wiring_tau: float = 1.0,
+                 aggregation: dict | None = None):
         super().__init__()
         if head_version not in SUPPORTED_HEAD_VERSIONS:
             raise ValueError(f"unsupported headVersion {head_version}")
@@ -228,6 +230,9 @@ class LogicNet(nn.Module):
                 raise ValueError(f"head tensor {n} has shape {np.shape(heads[n])}, expected {expected[n]} for headVersion {head_version}")
         self.heads = nn.ParameterDict({n: nn.Parameter(torch.from_numpy(np.array(heads[n], dtype=np.float32))) for n in HEAD_TENSOR_NAMES})
         self._gathers: dict[tuple[int, int, str], LayerGather] = {}
+        agg_cfg = AGG.normalize(aggregation, spec.layers, spec.channels)
+        self.aggregation_config = agg_cfg
+        self.agg = AGG.Aggregation(agg_cfg, spec.channels) if agg_cfg is not None else None
 
     # ----- wiring helpers -----
     def wiring_numpy(self) -> np.ndarray:
@@ -325,6 +330,7 @@ class LogicNet(nn.Module):
         wire_tau = self.wiring_tau if tau_wire is None else tau_wire
         if wire_tau <= 0:
             raise ValueError("tau_wire must be positive")
+        agg_cache: dict = {}
         for l in range(len(self.dilations)):
             is_hard_layer = l < frozen_prefix
             gath = self.gather_for(l, size, hard=is_hard_layer, hard_wiring=hard_wiring)
@@ -362,6 +368,8 @@ class LogicNet(nn.Module):
                 else:
                     t = G.lut_probabilities(self.phi[l], tau)  # [C,16]
                     y = G.soft_gate_lut_reduced(t.view(1, 1, 1, -1, 16), *inputs)
+            if self.agg is not None:
+                y = self.agg.apply(l, y, spatial, agg_cache, tau, hard=is_hard_layer)
             outs.append(y)
             x = y
         return outs
@@ -378,6 +386,7 @@ class LogicNet(nn.Module):
         hard_wiring = self.hard_wiring_numpy() if self.wiring_mode == "learned-k" else None
         x = spatial
         outs = []
+        agg_cache: dict = {}
         for l in range(len(self.dilations)):
             gath = self.gather_for(l, size, hard=True, hard_wiring=hard_wiring)
             if self.gate_arity == 2:
@@ -390,6 +399,8 @@ class LogicNet(nn.Module):
                 for value in inputs:
                     row = row * 2 + value.to(torch.int32)
                 y = ((gates[l].to(torch.int32).view(1, 1, 1, -1) >> row) & 1).to(torch.uint8)
+            if self.agg is not None:
+                y = self.agg.apply(l, y.to(torch.float32), spatial, agg_cache, 1.0, hard=True).to(torch.uint8)
             outs.append(y)
             x = y
         return outs

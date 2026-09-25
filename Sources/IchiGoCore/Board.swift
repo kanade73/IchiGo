@@ -39,6 +39,12 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
     public private(set) var wasEverOccupiedOrPlayed: [Bool]
     public private(set) var secondEncoreStartColors: [Color]
 
+    /// On-board locations in row-major order (built once; was rebuilt on every call).
+    private let onBoard: [Loc]
+    /// Visit stamps for `rawGroup` (replaces per-call `Set`s; not part of snapshots).
+    private var mark: [UInt32]
+    private var markStamp: UInt32 = 0
+
     public init(_ xSize: Int = Board.defaultLen, _ ySize: Int = Board.defaultLen) {
         precondition(xSize >= 0 && ySize >= 0 && xSize <= Board.maxLen && ySize <= Board.maxLen)
         self.xSize = xSize
@@ -55,11 +61,15 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
         multiStoneSuicideLegal = false
         wasEverOccupiedOrPlayed = [Bool](repeating: false, count: Board.maxArrSize)
         secondEncoreStartColors = [Color](repeating: .empty, count: Board.maxArrSize)
-        for y in 0 ..< ySize {
-            for x in 0 ..< xSize {
-                colors[Location.getLoc(x, y, xSize)] = .empty
-            }
+        onBoard = Board.onBoardLocations(xSize, ySize)
+        mark = [UInt32](repeating: 0, count: Board.maxArrSize)
+        for loc in onBoard {
+            colors[loc] = .empty
         }
+    }
+
+    private static func onBoardLocations(_ xSize: Int, _ ySize: Int) -> [Loc] {
+        (0 ..< ySize).flatMap { y in (0 ..< xSize).map { x in Location.getLoc(x, y, xSize) } }
     }
 
     private init(snapshot: Snapshot) {
@@ -77,6 +87,8 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
         multiStoneSuicideLegal = snapshot.multiStoneSuicideLegal
         wasEverOccupiedOrPlayed = snapshot.wasEverOccupiedOrPlayed
         secondEncoreStartColors = snapshot.secondEncoreStartColors
+        onBoard = Board.onBoardLocations(xSize, ySize)
+        mark = [UInt32](repeating: 0, count: Board.maxArrSize)
     }
 
     public static func initHash() {
@@ -270,15 +282,27 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
         }
 
         colors[loc] = pla.color
-        var processed = Set<Loc>()
+        // stamps of the opponent groups already examined: their stones keep that stamp in `mark`
+        var processed: (UInt32, UInt32, UInt32, UInt32) = (0, 0, 0, 0)
+        var processedCount = 0
+        func wasProcessed(_ stamp: UInt32) -> Bool {
+            (processedCount > 0 && processed.0 == stamp) || (processedCount > 1 && processed.1 == stamp)
+                || (processedCount > 2 && processed.2 == stamp) || (processedCount > 3 && processed.3 == stamp)
+        }
         var captured = 0
         var possibleKoLoc = Board.nullLoc
-        for offset in adjOffsets.prefix(4) {
-            let adjacent = loc + offset
-            guard colors[adjacent] == pla.opponent.color, !processed.contains(adjacent) else { continue }
+        for k in 0 ..< 4 {
+            let adjacent = loc + adjOffsets[k]
+            guard colors[adjacent] == pla.opponent.color, !wasProcessed(mark[adjacent]) else { continue }
             let group = rawGroup(at: adjacent)
-            processed.formUnion(group.stones)
-            if group.liberties.isEmpty {
+            switch processedCount {
+            case 0: processed.0 = markStamp
+            case 1: processed.1 = markStamp
+            case 2: processed.2 = markStamp
+            default: processed.3 = markStamp
+            }
+            processedCount += 1
+            if group.libertyCount == 0 {
                 captured += group.stones.count
                 possibleKoLoc = adjacent
                 for stone in group.stones {
@@ -288,14 +312,14 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
         }
 
         let playedGroup = rawGroup(at: loc)
-        if captured == 1, playedGroup.stones.count == 1, playedGroup.liberties.count == 1 {
+        if captured == 1, playedGroup.stones.count == 1, playedGroup.libertyCount == 1 {
             koLoc = possibleKoLoc
         } else {
             koLoc = Board.nullLoc
         }
         if pla == .black { numWhiteCaptures += captured } else { numBlackCaptures += captured }
 
-        if playedGroup.liberties.isEmpty {
+        if playedGroup.libertyCount == 0 {
             let suicided = playedGroup.stones.count
             for stone in playedGroup.stones {
                 colors[stone] = .empty
@@ -426,20 +450,19 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
     }
 
     public func regenChainsFromColors() {
-        chainData = [ChainData](repeating: ChainData(), count: Board.maxArrSize)
-        chainHead = [Loc](repeating: Board.nullLoc, count: Board.maxArrSize)
-        nextInChain = [Loc](repeating: Board.nullLoc, count: Board.maxArrSize)
+        chainData.withUnsafeMutableBufferPointer { $0.update(repeating: ChainData()) }
+        chainHead.withUnsafeMutableBufferPointer { $0.update(repeating: Board.nullLoc) }
+        nextInChain.withUnsafeMutableBufferPointer { $0.update(repeating: Board.nullLoc) }
         posHash = Board.zobrist.sizeX[xSize] ^ Board.zobrist.sizeY[ySize]
-        var seen = Set<Loc>()
-        for loc in boardLocations() {
+        for loc in onBoard {
             let color = colors[loc]
             guard color.player != nil else { continue }
             posHash ^= Board.zobrist.board[loc][Int(color.rawValue)]
-            guard !seen.contains(loc) else { continue }
+            // a stone already has a head exactly when an earlier group visited it
+            guard chainHead[loc] == Board.nullLoc else { continue }
             let group = rawGroup(at: loc)
-            seen.formUnion(group.stones)
             let head = loc
-            chainData[head] = ChainData(owner: color, numLocs: group.stones.count, numLiberties: group.liberties.count)
+            chainData[head] = ChainData(owner: color, numLocs: group.stones.count, numLiberties: group.libertyCount)
             for (index, stone) in group.stones.enumerated() {
                 chainHead[stone] = head
                 nextInChain[stone] = group.stones[(index + 1) % group.stones.count]
@@ -548,28 +571,41 @@ public final class Board: CustomStringConvertible, @unchecked Sendable {
     }
 
     private func boardLocations() -> [Loc] {
-        (0 ..< ySize).flatMap { y in (0 ..< xSize).map { x in Location.getLoc(x, y, xSize) } }
+        onBoard
     }
 
-    private func rawGroup(at initial: Loc) -> (stones: [Loc], liberties: Set<Loc>) {
+    /// Stones of the chain at `initial` in depth-first order, and its liberty count. Marks the
+    /// visited stones and liberties with a fresh `markStamp` (read back by `playMoveAssumeLegal`).
+    private func rawGroup(at initial: Loc) -> (stones: [Loc], libertyCount: Int) {
         let color = colors[initial]
-        guard color.player != nil else { return ([], []) }
+        guard color.player != nil else { return ([], 0) }
+        markStamp &+= 1
+        if markStamp == 0 {
+            mark.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            markStamp = 1
+        }
+        let stamp = markStamp
         var stones: [Loc] = []
-        var liberties = Set<Loc>()
-        var seen: Set<Loc> = [initial]
+        var libertyCount = 0
+        mark[initial] = stamp
         var queue = [initial]
         while let loc = queue.popLast() {
             stones.append(loc)
-            for offset in adjOffsets.prefix(4) {
-                let adjacent = loc + offset
-                if colors[adjacent] == .empty {
-                    liberties.insert(adjacent)
-                } else if colors[adjacent] == color, seen.insert(adjacent).inserted {
+            for k in 0 ..< 4 {
+                let adjacent = loc + adjOffsets[k]
+                let c = colors[adjacent]
+                if c == .empty {
+                    if mark[adjacent] != stamp {
+                        mark[adjacent] = stamp
+                        libertyCount += 1
+                    }
+                } else if c == color, mark[adjacent] != stamp {
+                    mark[adjacent] = stamp
                     queue.append(adjacent)
                 }
             }
         }
-        return (stones, liberties)
+        return (stones, libertyCount)
     }
 
     private func snapshot() -> Snapshot {

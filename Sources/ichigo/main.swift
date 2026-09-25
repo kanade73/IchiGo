@@ -91,12 +91,18 @@ commands:
                                  self-play with the model on both sides; writes SGF + root visit
                                  targets (JSONL) per game
   features --sgf-dir DIR --out FILE --size 9|19 [--rules cgos-area-psk-v1] [--komi K]
-           [--max-games N] [--min-turn T] [--feature-version 1|2] [--sample-per-game N]
+           [--max-games N] [--min-turn T] [--feature-version 1|2|3] [--sample-per-game N]
                                  replay SGF main lines and stream one JSONL row per position;
                                  rejected games go to <out>.rejects.jsonl with file name and move.
-                                 --feature-version 2 swaps history t=3..7 for group planes
-                                 (docs/spec/01-network.md §1); positionId is the same in both.
+                                 --feature-version 2 swaps history t=3..7 for group planes, 3 also
+                                 swaps t=2, empty and edge for chain/group facts
+                                 (docs/spec/01-network.md §1); positionId is the same in all.
                                  --sample-per-game keeps N turns per game (fixed by the gameId)
+  reencode --positions FILE --out FILE --feature-version 1|2|3
+                                 re-encode exported rows under another feature version by
+                                 replaying their setup and moves (same positionIds, so existing
+                                 labels still join); a row whose positionId does not reproduce is
+                                 an error
   benchmark --model PATH --positions FILE --batches 1,8,32 --out FILE.json
             [--backends cpu,cpu-packed,metal,metal-packed] [--warmup 50] [--iters 200]
                                  docs/spec/05-validation.md §7 Mac benchmark: warmup then measure
@@ -174,7 +180,7 @@ func cmdFeatures(_ args: Args) {
     let samplePerGame = args.options["sample-per-game"].flatMap(Int.init)
     if let n = samplePerGame, n < 1 { fail("--sample-per-game must be a positive integer", .usage) }
     let featureVersion = args.options["feature-version"].flatMap(Int.init) ?? FeatureEncoder.featureVersion
-    guard FeatureEncoder.supportedFeatureVersions.contains(featureVersion) else { fail("--feature-version must be 1 or 2", .usage) }
+    guard FeatureEncoder.supportedFeatureVersions.contains(featureVersion) else { fail("--feature-version must be 1, 2 or 3", .usage) }
     let fm = FileManager.default
     guard let names = try? fm.contentsOfDirectory(atPath: dir) else { fail("cannot list \(dir)", .usage) }
     let sgfs = names.filter { $0.lowercased().hasSuffix(".sgf") }.sorted()
@@ -221,6 +227,66 @@ func cmdFeatures(_ args: Args) {
     try? out.close(); try? rejects.close()
     let summary: [String: Any] = ["games": games, "positions": positions, "rejected": rejected, "out": outPath, "rejects": rejectPath, "rulesId": rules, "boardSize": size, "featureVersion": featureVersion]
     FileHandle.standardError.write((String(data: try! JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]), encoding: .utf8)! + "\n").data(using: .utf8)!)
+}
+
+/// Streams a file line by line (positions files run to gigabytes).
+final class LineReader {
+    private let handle: FileHandle
+    private var buffer = Data()
+    private var atEOF = false
+
+    init?(path: String) {
+        guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+        handle = h
+    }
+
+    deinit { try? handle.close() }
+
+    func next() -> String? {
+        while true {
+            if let nl = buffer.firstIndex(of: 0x0A) {
+                let line = buffer[buffer.startIndex ..< nl]
+                buffer.removeSubrange(buffer.startIndex ... nl)
+                return String(decoding: line, as: UTF8.self)
+            }
+            if atEOF {
+                guard !buffer.isEmpty else { return nil }
+                defer { buffer.removeAll() }
+                return String(decoding: buffer, as: UTF8.self)
+            }
+            let chunk = handle.readData(ofLength: 1 << 20)
+            if chunk.isEmpty { atEOF = true } else { buffer.append(chunk) }
+        }
+    }
+}
+
+func cmdReencode(_ args: Args) {
+    let inPath = args.require("positions")
+    let outPath = args.require("out")
+    guard let featureVersion = Int(args.require("feature-version")), FeatureEncoder.supportedFeatureVersions.contains(featureVersion) else {
+        fail("--feature-version must be 1, 2 or 3", .usage)
+    }
+    guard let reader = LineReader(path: inPath) else { fail("cannot read \(inPath)", .usage) }
+    guard FileManager.default.createFile(atPath: outPath, contents: nil), let out = FileHandle(forWritingAtPath: outPath) else {
+        fail("cannot write \(outPath)", .usage)
+    }
+    var rows = 0
+    while let line = reader.next() {
+        guard !line.isEmpty else { continue }
+        do {
+            guard let row = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
+                throw PositionExport.RejectReason.parse("row is not an object")
+            }
+            let encoded = try PositionExport.reencode(row, featureVersion: featureVersion)
+            out.write(try JSONSerialization.data(withJSONObject: encoded, options: [.sortedKeys, .withoutEscapingSlashes]))
+            out.write("\n".data(using: .utf8)!)
+            rows += 1
+        } catch {
+            fail("row \(rows + 1): \(error)", .usage)
+        }
+    }
+    try? out.close()
+    FileHandle.standardError.write("{\"featureVersion\":\(featureVersion),\"positions\":\(rows),\"out\":\"\(outPath)\"}\n".data(using: .utf8)!)
 }
 
 func cmdDoctor() {
@@ -821,6 +887,7 @@ case "inspect": cmdInspect(args)
 case "eval": await cmdEval(args)
 case "eval-batch": await cmdEvalBatch(args)
 case "features": cmdFeatures(args)
+case "reencode": cmdReencode(args)
 case "gtp": await cmdGTP(args)
 case "selfplay": await cmdSelfplay(args)
 case "benchmark": await cmdBenchmark(args)

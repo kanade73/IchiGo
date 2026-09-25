@@ -28,7 +28,7 @@ FORMAT = "ichigo.logic"
 VERSION = 1
 FEATURE_VERSION = 1
 # docs/spec/01-network.md §1: both versions share the 32-channel layout; only the encoder differs.
-SUPPORTED_FEATURE_VERSIONS = (1, 2)
+SUPPORTED_FEATURE_VERSIONS = (1, 2, 3)
 RULES_ID = "cgos-area-psk-v1"
 GATE_ENCODING = "truth-table-lsb-2a-plus-b"
 LUT4_GATE_ENCODING = "lut4-msb-first"

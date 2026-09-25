@@ -38,6 +38,8 @@ DEFAULTS.update({
     # T33 capacity/wiring/CNN-baseline experiment keys
     "modelType": "logic", "channels": None, "dilations": None, "bank1Ratio": 0.1, "wiringSeed": None, "headVersion": 2,
     "gateArity": 2,
+    # phase 20: experimental aggregation layers (aggregation.py); None = plain gate network
+    "aggregation": None,
 })
 REQUIRED = ["data", "out", "boardSize", "runId"]
 KNOWN = set(DEFAULTS) | set(REQUIRED)
@@ -93,6 +95,17 @@ def load_config(path: str) -> tuple[dict, dict]:
         raise ConfigError("wiringMode must be fixed or learned-k")
     if not isinstance(cfg["wiringCandidates"], int) or isinstance(cfg["wiringCandidates"], bool) or cfg["wiringCandidates"] <= 0:
         raise ConfigError("wiringCandidates must be a positive integer")
+    if cfg["aggregation"] is not None:
+        from .aggregation import normalize
+        from .wiring import PROFILES
+        if cfg["modelType"] != "logic" or cfg["gateArity"] != 2 or cfg["wiringMode"] != "fixed" or cfg["discretization"] != "prefix-60-30-10":
+            raise ConfigError("aggregation requires modelType logic, gateArity 2, wiringMode fixed and prefix-60-30-10")
+        base = PROFILES[cfg["profile"]]
+        layers = len(cfg["dilations"] or base["dilations"])
+        try:
+            normalize(cfg["aggregation"], layers, cfg["channels"] or base["channels"])
+        except ValueError as e:
+            raise ConfigError(str(e)) from e
     cfg["data"] = os.path.abspath(cfg["data"])
     cfg["out"] = os.path.abspath(cfg["out"])
     if cfg["throughputReference"] is not None:

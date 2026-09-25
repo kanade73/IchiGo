@@ -38,7 +38,7 @@ final class EvaluationAdapterTests: XCTestCase {
     func testEvaluatorEncodesWithTheModelsFeatureVersion() async throws {
         let g = try GameState(boardSize: 9, komi: 7)
         for (x, y) in [(0, 0), (4, 4), (2, 2), (1, 0), (6, 6)] { try g.play(g.toMove, .point(x: x, y: y)) }
-        for version in [1, 2] {
+        for version in [1, 2, 3] {
             let backend = RecordingBackend()
             let caps = ModelCapabilities(boardSizes: [9], rulesID: IchiGoRules.rulesID, hasOwnership: true, featureVersion: version)
             let ev = LogicEvaluator(capabilities: caps, modelHash: "fake", backend: backend)

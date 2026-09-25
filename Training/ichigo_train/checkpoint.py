@@ -99,6 +99,7 @@ def model_from_checkpoint(ck: dict):
         wiring_candidates=candidate_count,
         candidate_wiring=candidates,
         wiring_tau=ck.get("wiringTau", cfg.get("wiringTau", 1.0)),
+        aggregation=cfg.get("aggregation"),
     )
     # stateDict is authoritative for torch buffers/parameters. The explicit arrays above keep
     # checkpoints inspectable and permit loading older minimal payloads.

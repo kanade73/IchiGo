@@ -26,6 +26,7 @@ DEFAULTS once it accepts these keys per the report's diff):
               Ignored for cnn-baseline.
   gateArity    2 (default) or experimental LUT4 arity 4 (logic only)
   headVersion model.LogicNet/baseline_cnn.BaselineCNN head_version; default model.HEAD_VERSION (2).
+  aggregation experimental aggregation layers (aggregation.py); default None (logic only)
 """
 
 from __future__ import annotations
@@ -70,4 +71,5 @@ def build_model_from_config(cfg: dict):
         wiring_mode=cfg.get("wiringMode", "fixed"),
         wiring_candidates=cfg.get("wiringCandidates", 8),
         wiring_tau=cfg.get("wiringTau", 1.0),
+        aggregation=cfg.get("aggregation"),
     )

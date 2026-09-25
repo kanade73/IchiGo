@@ -18,9 +18,12 @@ def build_optimizer(model: LogicNet, gate_lr: float, head_lr: float, head_wd: fl
     gate_params = [model.theta]
     if getattr(model, "wiring_mode", "fixed") == "learned-k":
         gate_params.append(model.phi)
+    # aggregation (threshold sign/threshold) parameters train with the gates: lr=gate_lr, wd=0
+    gate_params += [q for n, q in model.named_parameters() if n.startswith("agg.")]
     return torch.optim.AdamW([
         {"params": gate_params, "lr": gate_lr, "weight_decay": 0.0, "name": "gates"},
-        {"params": [q for n, q in model.named_parameters() if n not in ("theta", "phi")], "lr": head_lr, "weight_decay": head_wd, "name": "heads"},
+        {"params": [q for n, q in model.named_parameters() if n not in ("theta", "phi") and not n.startswith("agg.")],
+         "lr": head_lr, "weight_decay": head_wd, "name": "heads"},
     ], betas=(0.9, 0.999), eps=1e-8)
 
 

@@ -85,6 +85,8 @@ def export_model(model: LogicNet, out: str, board_sizes: list[int], provenance: 
     ``_calibration_provenance`` for how it maps to ``calibrationTemperature`` and
     ``trainingProvenance.calibration``.
     """
+    if getattr(model, "agg", None) is not None:
+        raise ValueError("aggregation layers (phase 20 experiment) are not in the .ichigo format yet")
     out = os.path.normpath(out)
     if os.path.lexists(out):
         if not overwrite:
